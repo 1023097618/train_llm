@@ -1,0 +1,19 @@
+name: gpt
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # PyTorch and rustbpe (locally modified) are installed separately by setup_env.sh
+      - numpy>=2.0
+      - pandas>=2.2
+      - pyarrow>=16.0
+      - tiktoken>=0.12
+      - wandb>=0.20
+      - tqdm
+      - docstring_parser
+      - huggingface_hub
+      - datasets
+      - matplotlib
+      - ipykernel

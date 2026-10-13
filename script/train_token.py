@@ -115,7 +115,7 @@ tokenizer=rustbpe.Tokenizer()
 # CJK_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}{1,16}|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
 # 只允许前导“空格”黏词，标点不黏
 CJK_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)| ?\p{L}{1,16}|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
-tokenizer.train_from_iterator(iterator=token_iteration(),vocab_size=VOCAB_SIZE,pattern=CJK_PATTERN)
+tokenizer.train_from_iterator(iterator=token_iteration(),vocab_size=VOCAB_SIZE,pattern=CJK_PATTERN,min_freq=2)
 import tiktoken
 enc=tiktoken.Encoding(name="mytoken",
                       pat_str=tokenizer.get_pattern(),

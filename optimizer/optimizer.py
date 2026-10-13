@@ -1,0 +1,293 @@
+import torch
+import math
+import torch.distributed as dist
+from typing import List,Dict
+# torch._dynamo.config.recompile_limit = 32
+
+@torch.compile(dynamic=False,fullgraph=True)
+def fused_adamw(
+    p:torch.Tensor,
+    grad:torch.Tensor,
+    param_avg:torch.Tensor,
+    param_avg_sq:torch.Tensor,
+    step:torch.Tensor,
+    beta1:torch.Tensor,
+    beta2:torch.Tensor,
+    lr:torch.Tensor,
+    wd:torch.Tensor,
+    eps:torch.Tensor,
+):
+    p32 = p.float()
+    grad32 = grad.float()
+    avg32 = param_avg.float()
+    avg_sq32 = param_avg_sq.float()
+
+    p32.mul_(1 - lr * wd)
+    avg32.lerp_(grad32, 1 - beta1)
+    avg_sq32.lerp_(grad32.square(), 1 - beta2)
+
+    bias1 = 1 - beta1**step
+    bias2 = 1 - beta2**step
+    update = (avg32 / bias1) / ((avg_sq32 / bias2).sqrt() + eps)
+    p32.sub_(lr * update)
+
+    p.copy_(p32)
+    param_avg.copy_(avg32)
+    param_avg_sq.copy_(avg_sq32)
+
+
+
+# https://arxiv.org/pdf/2505.16932
+# see get_coefficient.ipynb
+coeffs_list=[
+    [8.077364675154751, -23.164514872804553, 17.02082042895468], 
+ [4.004175387920777, -2.8941542019134276, 0.5359620057631334], 
+ [3.8575603752860568, -2.8573722859634496, 0.5422813720930638], 
+ [3.273090811768049, -2.454155567360048, 0.4995156193426476], 
+ [2.3739476001512374, -1.733927991006291, 0.42586024687456364]
+ ]
+
+
+
+@torch.compile(dynamic=False,fullgraph=True)
+def fused_muon(
+        stacked_params:torch.Tensor,
+        stacked_grad:torch.Tensor,
+        momentum_buffer1:torch.Tensor,
+        momentum_buffer2:torch.Tensor,
+        momentum1:torch.Tensor,
+        momentum2:torch.Tensor,
+        wd:torch.Tensor,
+        lr:torch.Tensor,
+        eps:torch.Tensor,
+        red_dim:int
+):
+    momentum_buffer1.lerp_(stacked_grad,1-momentum1)
+    g=momentum_buffer1.lerp(stacked_grad,1-momentum1)
+    g=g/(g.norm(dim=(-1,-2),keepdim=True)*1.01+eps)
+    X=g.bfloat16()
+    if g.shape[2]>g.shape[1]:
+        for a,b,c in coeffs_list:
+            A=X@X.mT
+            B=b*A+c*A@A
+            X=a*X +B@X
+    else:
+        for a,b,c in coeffs_list:
+            A=X.mT@X
+            B=b*A+c*A@A
+            X=a*X+X@B
+    # assert torch.linalg.svdvals(X.float()).amax(dim=1).max()<2.
+    g=X.to(dtype=g.dtype)
+    gmean=g.square().mean(red_dim,keepdim=True)
+    gnorm=(gmean*g.shape[red_dim]).sum(dim=(-1,-2),keepdim=True).sqrt()
+    momentum_buffer2.lerp_(gmean,1-momentum2)
+    s=momentum_buffer2.clamp_min(1e-10).rsqrt()
+    sg=s*g
+    g=sg*gnorm/(sg.norm(dim=(-2,-1),keepdim=True)+eps)
+    mask=g*stacked_params>=0
+    stacked_params.add_(-lr*g-lr*wd*mask*stacked_params)
+ 
+    
+
+class MuonOptimizer(torch.optim.Optimizer):
+    def __init__(self, param_groups:List[Dict]):
+        super().__init__(param_groups,defaults={})
+        # adamw hyperparameter
+        self.adamw_beta1=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        self.adamw_beta2=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        self.adamw_lr=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        self.adamw_wd=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        self.adamw_eps=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        # muon hyperparameter
+        self.muon_momentum1=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        self.muon_momentum2=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        self.muon_eps=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        self.muon_wd=torch.tensor(0.,device='cpu',dtype=torch.float32)
+        self.muon_lr=torch.tensor(0.,device='cpu',dtype=torch.float32)
+
+        self.is_dist=False
+        if dist.is_available() and dist.is_initialized():
+            self.world_size=dist.get_world_size()
+            self.rank=dist.get_rank()
+            if self.world_size>1:
+                self.is_dist=True
+        else:
+            self.world_size=1
+            self.rank=0
+        for g in self.param_groups:
+            if g['kind']=='adamw':
+                assert all([_ in g for _ in ['beta1','beta2','lr','wd','eps','params']]),f'adamw lack hyperparameter,group members:{g.keys()}'
+            elif g['kind']=='muon':
+                assert all([_ in g for _ in ['momentum1','momentum2','eps','wd','lr','params']]),f'muon lack hyperparameter,group members:{g.keys()}'
+                assert isinstance(g['params'],list) and len(g['params'])>0 and all(_.shape==g['params'][0].shape and _.dim()>1 for _ in g['params']),f'params not right,{[_.shape for _ in g["params"]]}'
+    @torch.no_grad()
+    def step(self):
+        reduce_infos=[]
+        for group in self.param_groups:
+            if group['kind']=='adamw':
+                reduce_infos.append(self.reduce_adamw(group))
+            elif group['kind']=='muon':
+                reduce_infos.append(self.reduce_muon(group))
+            else:
+                raise ValueError("kind should be adamw or muon")
+        gather_info=[]
+        for group,info in zip(self.param_groups,reduce_infos):
+            if group['kind']=='adamw':
+                self.step_adamw(group,info,gather_info)
+            elif group['kind']=='muon':
+                self.step_muon(group,info,gather_info)
+            else:
+                raise ValueError("kind should be adamw or muon")
+        self.finish_gather(gather_info)
+
+    def finish_gather(self,info):
+        for i in info:
+            if i['future'] is not None:
+                future=i['future']
+                future.wait()
+            if i['copy_params'] is not None:
+                paste_params:torch.Tensor=i['paste_params']
+                copy_params=i['copy_params']
+                if i['kind']=='muon':
+                    torch._foreach_copy_(paste_params,copy_params.unbind(0)[:len(paste_params)])
+                elif i['kind']=='adamw':
+                    paste_params.copy_(copy_params[:len(paste_params)])
+
+
+    def reduce_muon(self,group):
+        params=group['params']
+        grad=torch.stack([p.grad for p in params],dim=0)
+        if not self.is_dist:
+            return dict(future=None,grad=grad,chunk_size=len(grad),is_sharded=False)
+        device,dtype,shape=grad.device,grad.dtype,grad[0].shape
+        chunk_size=math.ceil(len(grad)/self.world_size)
+        chunk_grad=torch.empty(chunk_size,*shape,device=device,dtype=dtype)
+        pad_grad=torch.zeros(chunk_size*self.world_size,*shape,device=device,dtype=dtype)
+        pad_grad[:len(grad)].copy_(grad)
+        future=dist.reduce_scatter_single(chunk_grad,pad_grad,dist.ReduceOp.AVG,async_op=True).get_future()
+        return dict(future=future,chunk_grad=chunk_grad,chunk_size=chunk_size,pad_grad=pad_grad,is_sharded=True)
+
+    def reduce_adamw(self,group):
+        params=group['params']
+        reduce_info={}
+        for p in params:
+            #TODO 这边需要进一步考虑在一些冻结层数训练场景下，梯度会为空的场景
+            grad=p.grad
+            if not self.is_dist:
+                reduce_info[p]=dict(future=None,grad=grad,is_sharded=False)
+            elif grad.numel()<1024 or grad.shape[0]< self.world_size:
+                dist.all_reduce(grad,dist.ReduceOp.AVG)
+                reduce_info[p]=dict(future=None,grad=grad,is_sharded=False)
+            else:
+                device,dtype,shape=grad.device,grad.dtype,grad[0].shape
+                chunk_size=math.ceil(len(grad)/self.world_size)
+                chunk_grad=torch.empty(chunk_size,*shape,device=device,dtype=dtype)
+                pad_grad=torch.zeros(chunk_size*self.world_size,*shape,device=device,dtype=dtype)
+                pad_grad[:len(grad)].copy_(grad)
+                future=dist.reduce_scatter_single(chunk_grad,pad_grad,op=dist.ReduceOp.AVG,async_op=True).get_future()
+                reduce_info[p]=dict(future=future,chunk_grad=chunk_grad,chunk_size=chunk_size,pad_grad=pad_grad,is_sharded=True)
+        return reduce_info
+                
+        
+
+    def step_muon(self,group,info,gather_list):
+        # group:dict,contain momentum1,momentum2,eps,beta,wd,lr
+        params=group['params']
+        state=self.state[params[0]]
+        # grad=torch.stack([p.grad for p in params],dim=0)
+        future=info['future']
+        params_shape,device,dtype=params[0].shape,params[0].device,params[0].dtype
+        if future:
+            future.wait()
+        if info['is_sharded']:
+            grad=info['chunk_grad']
+            chunk_size=info['chunk_size']
+            start_idx=self.rank*chunk_size
+            owned_params=params[start_idx:start_idx+chunk_size]
+            owned_grad=grad[:len(owned_params)]
+        else:
+            grad=info['grad']
+            owned_params=params
+            owned_grad=grad
+        if len(owned_params)!=0:
+            stacked_param=torch.stack(owned_params,dim=0)
+            shape=stacked_param.shape
+            if 'momentum_buffer1' not in state:
+                state['momentum_buffer1']=torch.zeros_like(stacked_param,device=device,dtype=dtype)
+                state['momentum_buffer2']=torch.zeros(shape[0],shape[1],1,device=device,dtype=dtype) if shape[2]>shape[1] else torch.zeros(shape[0],1,shape[2],device=device,dtype=dtype)
+            red_dim=-1 if shape[-1]>shape[-2] else -2
+            self.muon_momentum1.fill_(group['momentum1'])
+            self.muon_momentum2.fill_(group['momentum2'])
+            self.muon_eps.fill_(group['eps'])
+            self.muon_wd.fill_(group['wd'])
+            self.muon_lr.fill_(group['lr'])
+            fused_muon(
+                stacked_param,
+                owned_grad,
+                state['momentum_buffer1'],
+                state['momentum_buffer2'],
+                self.muon_momentum1,
+                self.muon_momentum2,
+                self.muon_wd,
+                self.muon_lr,
+                self.muon_eps,
+                red_dim
+            )
+        else:
+            stacked_param=torch.zeros(0,*params_shape,device=device,dtype=dtype)
+        if future:
+            chunk_params=torch.zeros(chunk_size,*grad[0].shape,device=device,dtype=dtype)
+            chunk_params[:len(stacked_param)].copy_(stacked_param)
+            copy_params=info['pad_grad']
+            future=dist.all_gather_single(copy_params,chunk_params,async_op=True).get_future()
+            gather_list.append(dict(future=future,copy_params=copy_params,paste_params=params,kind='muon'))
+        else:
+            torch._foreach_copy_(params,stacked_param.unbind(0))
+            
+    def step_adamw(self,group,info,gather_list):
+        # group: dict,contain lr,beta1,beta2,params,wd,eps
+        for p in group['params']:
+            pinfo=info[p]
+            future=pinfo['future']
+            if future:
+                future.wait()
+            if pinfo['is_sharded']:
+                chunk_grad=pinfo['chunk_grad']
+                chunk_size=pinfo['chunk_size']
+                start_idx=self.rank*chunk_size
+                owned_params=p[start_idx:start_idx+chunk_size]
+                owned_grad=chunk_grad[:len(owned_params)]
+            else:
+                chunk_grad=pinfo['grad']
+                owned_params=p
+                owned_grad=chunk_grad
+            state=self.state[p]
+            shape,device,dtype=chunk_grad.shape,chunk_grad.device,chunk_grad.dtype
+            if 'param_avg' not in state:
+                state['param_avg']=torch.zeros_like(owned_params)
+                state['param_avg_sq']=torch.zeros_like(owned_params)
+                state['step']=torch.tensor(1)
+            self.adamw_beta1.fill_(group['beta1'])
+            self.adamw_beta2.fill_(group['beta2'])
+            self.adamw_lr.fill_(group['lr'])
+            self.adamw_wd.fill_(group['wd'])
+            self.adamw_eps.fill_(group['eps'])
+            fused_adamw(
+                owned_params,
+                owned_grad,
+                state['param_avg'],
+                state['param_avg_sq'],
+                state['step'],
+                self.adamw_beta1,
+                self.adamw_beta2,
+                self.adamw_lr,
+                self.adamw_wd,
+                self.adamw_eps
+            )
+            state['step']+=1
+            if future:
+                chunk_params=torch.zeros(*shape,device=device,dtype=dtype)
+                chunk_params[:len(owned_params)].copy_(owned_params)
+                copy_params=pinfo['pad_grad']
+                future=dist.all_gather_single(copy_params,chunk_params,async_op=True).get_future()
+                gather_list.append(dict(future=future,copy_params=copy_params,paste_params=p,kind='adamw'))

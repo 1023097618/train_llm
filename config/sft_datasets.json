@@ -1,0 +1,11 @@
+[
+  {
+    "path": "data/processed/sft/t2t/sft_t2t-*.parquet",
+    "holdout_last": true,
+    "eval": true
+  },
+  {
+    "path": "data/raw/custom/identity_conversations.jsonl",
+    "type": "jsonl"
+  }
+]

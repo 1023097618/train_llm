@@ -149,6 +149,23 @@ gradient_step=batch_size/args.device_batch_size/world_size
 assert gradient_step==int(gradient_step),"batch_size = device_batch_size * world_size * gradient_step, all need to be integer"
 gradient_step=int(gradient_step)
 
+# 只在 rank0 统计 token，再广播给其他 rank，避免多进程同时写缓存/重复统计
+select_result=[None]
+if is_main:
+    try:
+        select_result[0]=pretraindata.select_train_files(args.data_dir,tokeniz,target_token)
+    except RuntimeError as e:
+        select_result[0]=str(e)
+if ddp:
+    dist.broadcast_object_list(select_result,src=0)
+if isinstance(select_result[0],str):
+    if ddp:
+        dist.destroy_process_group()
+    raise SystemExit(select_result[0])
+train_files,train_token_total=select_result[0]
+if is_main:
+    print(f"use {len(train_files)} train files, {train_token_total:,} tokens >= {args.param_ratio} * {P:,} params")
+
 test_dataset = pretraindata.PretrainDataset(
     args.data_dir, 'test', tokeniz, args.device_batch_size, args.seq_len
 )
@@ -195,7 +212,7 @@ else:
     best_bpb=float('inf')
 train_dataset = pretraindata.PretrainDataset(
     args.data_dir, 'train', tokeniz, batch_size//world_size, args.seq_len,
-    resume_state_dict=train_resume_state,rank=rank,world_size=world_size
+    resume_state_dict=train_resume_state,rank=rank,world_size=world_size,data_files=train_files
 )
 train_loader = iter(DataLoader(train_dataset,**loader_kwargs))
 loader_state = dict(train_resume_state or {})

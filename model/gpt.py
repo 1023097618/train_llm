@@ -29,6 +29,15 @@ class GPTConfig:
     def head_dim(self):
         return self.model_dim // self.query_num
 
+    @classmethod
+    def from_depth(cls,depth:int,aspect_ratio:int=64,head_dim:int=128,kv_num:int=None,**kwargs):
+        # nanochat style scaling: only depth is tuned, width and heads follow
+        # model_dim = depth*aspect_ratio, rounded up to a multiple of head_dim
+        model_dim=((depth*aspect_ratio+head_dim-1)//head_dim)*head_dim
+        query_num=model_dim//head_dim
+        kv_num=query_num if kv_num is None else kv_num
+        return cls(n_layer=depth,model_dim=model_dim,query_num=query_num,kv_num=kv_num,**kwargs)
+
 @dataclass
 class GPTOutPut:
     logit:torch.Tensor=None

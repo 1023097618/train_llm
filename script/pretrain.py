@@ -55,11 +55,9 @@ parser.add_argument("--matrix_lr",default=0.02,type=float,help="matrix learning 
 # parser.add_argument("--scalar_lr",default=0.5,type=float,help="learning rate for scaler")
 #model config
 parser.add_argument("--seq_len",default=1024,type=int,help="model sequence len")
-parser.add_argument("--model_layers",type=int,default=12,help="number of blocks of the model")
-parser.add_argument("--model_dims",type=int,default=768,help="hidden dim of the model")
+parser.add_argument("--depth",type=int,default=12,help="number of blocks of the model; model_dim and head num are derived from it (nanochat style)")
 parser.add_argument("--vocab_size",type=int,default=65536,help="vocab size of the model")
-parser.add_argument("--kv_num",type=int,default=6,help="kv head of the model")
-parser.add_argument("--q_num",type=int,default=6,help="q head of the model")
+parser.add_argument("--kv_num",type=int,default=None,help="kv head of the model (default: same as q head num, set smaller to use GQA)")
 
 args=parser.parse_args()
 os.makedirs(os.path.dirname(os.path.abspath(args.save_ckpt_path)), exist_ok=True)
@@ -130,13 +128,7 @@ elif batch_size % args.device_batch_size != 0:
         f"{batch_size % args.device_batch_size} sample(s) will be ignored per optimizer step.",
         RuntimeWarning,
     )
-config=gpt.GPTConfig()
-config.seq_len=args.seq_len
-config.n_layer=args.model_layers
-config.model_dim=args.model_dims
-config.vocab_size=args.vocab_size
-config.kv_num=args.kv_num
-config.query_num=args.q_num
+config=gpt.GPTConfig.from_depth(args.depth,kv_num=args.kv_num,seq_len=args.seq_len,vocab_size=args.vocab_size)
 orig_gpt=gpt.GPT(config,device,tokeniz)
 compiled_gpt=torch.compile(orig_gpt,dynamic=False)
 
@@ -145,6 +137,18 @@ target_token=args.param_ratio*P        #token we need to train model   12*model_
 num_iteration=int(target_token/args.batch_token)
 if args.max_steps > 0:
     num_iteration=min(num_iteration,args.max_steps)
+# nanochat style hyperparameter transfer: the default lr/wd are tuned on d12 with batch_token=B_REF
+B_REF=2**19
+with torch.device("meta"):
+    ref_gpt=gpt.GPT(gpt.GPTConfig.from_depth(12,seq_len=args.seq_len,vocab_size=args.vocab_size),"meta",tokeniz)
+ref_scale=ref_gpt.get_model_scale()
+D_REF=args.param_ratio*(ref_scale['transformer_matrix']+ref_scale['lm_head_count'])
+del ref_gpt
+# Adam/Muon updates are normalized, so lr ∝ sqrt(B)
+batch_lr_scale=(args.batch_token/B_REF)**0.5
+# keep the AdamW timescale 1/(lr*wd) a fixed fraction of training: wd ∝ sqrt(B)/D
+weight_decay_scaled=args.weight_decay*batch_lr_scale*(D_REF/target_token)
+config_all.update(batch_lr_scale=batch_lr_scale,weight_decay_scaled=weight_decay_scaled)
 gradient_step=batch_size/args.device_batch_size/world_size
 assert gradient_step==int(gradient_step),"batch_size = device_batch_size * world_size * gradient_step, all need to be integer"
 gradient_step=int(gradient_step)
@@ -175,10 +179,10 @@ if args.num_workers > 0:
 
 test_loader_builder = lambda: DataLoader(test_dataset,batch_size=None, num_workers=0)
 param_groups=orig_gpt.get_param_groups(
-    lmhead_lr=args.lmhead_lr,
-    embedding_lr=args.embedding_lr,
-    matrix_lr=args.matrix_lr,
-    weight_decay=args.weight_decay,
+    lmhead_lr=args.lmhead_lr*batch_lr_scale,
+    embedding_lr=args.embedding_lr*batch_lr_scale,
+    matrix_lr=args.matrix_lr*batch_lr_scale,
+    weight_decay=weight_decay_scaled,
 )
 optimiz=optimizer.MuonOptimizer(param_groups)
 flops_per_token=orig_gpt.get_flops_per_token()
@@ -241,7 +245,7 @@ def get_momentum(it):
 
 def get_wd(it):
     scale=0.5*(1+math.cos(math.pi*it/num_iteration))
-    result= max(scale,args.min_weight_decay_ratio)*args.weight_decay
+    result= max(scale,args.min_weight_decay_ratio)*weight_decay_scaled
     return result
 
 @torch.no_grad()

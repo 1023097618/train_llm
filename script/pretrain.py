@@ -22,7 +22,6 @@ from common.data_paths import PRETRAIN_T2T
 from tokenizer import tokenizer
 from common import common
 import os
-import warnings
 from optimizer import optimizer
 parser=argparse.ArgumentParser(description="Pretrain base model")
 
@@ -113,21 +112,16 @@ prompts=[
 # ]
 tokeniz=tokenizer.Tokenizer.from_dict(args.tokenizer_path,device=device)
 token_bytes=tokeniz.get_token_bytes()
-batch_size=int(args.batch_token/args.seq_len)
-if batch_size < args.device_batch_size:
-    warnings.warn(
-        f"batch_token/seq_len gives batch_size={batch_size}, smaller than "
-        f"device_batch_size={args.device_batch_size}; gradient_step will be 0 "
-        "and no parameter update will be performed.",
-        RuntimeWarning,
+if args.batch_token % args.seq_len != 0:
+    raise ValueError(f"batch_token={args.batch_token} must be divisible by seq_len={args.seq_len}")
+batch_size=args.batch_token//args.seq_len
+per_step=args.device_batch_size*world_size
+if batch_size < per_step or batch_size % per_step != 0:
+    raise ValueError(
+        f"batch_size={batch_size} (batch_token/seq_len) must be a positive multiple of "
+        f"device_batch_size*world_size={args.device_batch_size}*{world_size}={per_step}"
     )
-elif batch_size % args.device_batch_size != 0:
-    warnings.warn(
-        f"batch_size={batch_size} is not divisible by "
-        f"device_batch_size={args.device_batch_size}; "
-        f"{batch_size % args.device_batch_size} sample(s) will be ignored per optimizer step.",
-        RuntimeWarning,
-    )
+gradient_step=batch_size//per_step
 config=gpt.GPTConfig.from_depth(args.depth,kv_num=args.kv_num,seq_len=args.seq_len,vocab_size=args.vocab_size)
 orig_gpt=gpt.GPT(config,device,tokeniz)
 compiled_gpt=torch.compile(orig_gpt,dynamic=False)
@@ -149,9 +143,6 @@ batch_lr_scale=(args.batch_token/B_REF)**0.5
 # keep the AdamW timescale 1/(lr*wd) a fixed fraction of training: wd ∝ sqrt(B)/D
 weight_decay_scaled=args.weight_decay*batch_lr_scale*(D_REF/target_token)
 config_all.update(batch_lr_scale=batch_lr_scale,weight_decay_scaled=weight_decay_scaled)
-gradient_step=batch_size/args.device_batch_size/world_size
-assert gradient_step==int(gradient_step),"batch_size = device_batch_size * world_size * gradient_step, all need to be integer"
-gradient_step=int(gradient_step)
 
 # 只在 rank0 统计 token，再广播给其他 rank，避免多进程同时写缓存/重复统计
 select_result=[None]
@@ -169,6 +160,8 @@ if isinstance(select_result[0],str):
 train_files,train_token_total=select_result[0]
 if is_main:
     print(f"use {len(train_files)} train files, {train_token_total:,} tokens >= {args.param_ratio} * {P:,} params")
+    print(f"total steps: {num_iteration:,} (target {target_token:,} tokens / {args.batch_token:,} tokens per step, "
+          f"gradient_step {gradient_step})")
 
 test_dataset = pretraindata.PretrainDataset(
     args.data_dir, 'test', tokeniz, args.device_batch_size, args.seq_len

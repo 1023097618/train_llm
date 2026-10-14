@@ -10,6 +10,6 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 unset all_proxy ALL_PROXY
 python -m script.train_token
 python -m script.eval_token
-python -m script.pretrain --depth=20 --seq_len=2048 --device_batch_size=32
+python -m script.pretrain --depth=20 --seq_len=2048 --device_batch_size=8
 
 python -m script.train_sft --datasets=config/sft_datasets.json

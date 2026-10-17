@@ -1,4 +1,4 @@
-"""Download nanochat's SFT datasets (SmolTalk, MMLU, GSM8K) into data/raw/sft.
+"""Download nanochat's SFT datasets (SmolTalk, MMLU, GSM8K) and hermes function-calling data into data/raw/sft.
 
 usage:
 python -m script.download_sft
@@ -14,6 +14,8 @@ DATASETS = [
     ("HuggingFaceTB/smol-smoltalk", "smol-smoltalk", ["data/train-*.parquet", "data/test-*.parquet"]),
     ("cais/mmlu", "mmlu", ["all/auxiliary_train-*.parquet", "all/test-*.parquet"]),
     ("openai/gsm8k", "gsm8k", ["main/train-*.parquet", "main/test-*.parquet"]),
+    ("NousResearch/hermes-function-calling-v1", "hermes-function-calling-v1",
+     ["func-calling.json", "glaive-function-calling-5k.json"]),
 ]
 
 for repo_id, local_name, patterns in DATASETS:

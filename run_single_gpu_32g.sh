@@ -14,4 +14,4 @@ python -m script.eval_token
 python -m script.pretrain --depth=20 --seq_len=2048 --device_batch_size=8
 
 python -m script.download_sft
-python -m script.train_sft
+python -m script.train_sft --seq_len=2048

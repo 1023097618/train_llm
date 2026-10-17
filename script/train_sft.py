@@ -7,7 +7,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 \
     -m script.train_sft --use_wandb=0
 
 Data mixture follows nanochat's chat_sft.py: SmolTalk + MMLU x3 + GSM8K x4,
-plus our own identity conversations.
+plus hermes function-calling data and our own identity conversations.
 """
 
 import argparse
@@ -26,6 +26,7 @@ parser.add_argument("--device_type", default="cuda", choices=("cuda", "cpu"), he
 parser.add_argument("--use_wandb", type=int, default=1, help="if use wandb to log(0 to disable wandb)")
 parser.add_argument("--mmlu_epochs", default=3, type=int, help="epochs of MMLU auxiliary_train in the mixture (teaches multiple choice)")
 parser.add_argument("--gsm8k_epochs", default=4, type=int, help="epochs of GSM8K train in the mixture (teaches math and calculator use)")
+parser.add_argument("--toolcall_epochs", default=2, type=int, help="epochs of hermes function-calling data in the mixture (teaches general tool use, 0 to disable)")
 parser.add_argument("--identity_path", default=str(SFT_IDENTITY), type=str, help="jsonl of identity conversations")
 parser.add_argument("--identity_epochs", default=2, type=int, help="epochs of identity conversations in the mixture(0 to disable)")
 parser.add_argument("--pretrained_ckpt_path", type=str, default="weight/pretrained_model.ckpt", help="path of pretrained model checkpoint")
@@ -90,6 +91,9 @@ def build_train_mixture():
     tasks=[sftdata.SmolTalk("train")] # 460K rows of general conversations
     tasks+=[mmlu]*args.mmlu_epochs
     tasks+=[gsm8k]*args.gsm8k_epochs
+    if args.toolcall_epochs > 0:
+        toolcall=sftdata.HermesFunctionCalling() # 7K rows of multi-turn function calling
+        tasks+=[toolcall]*args.toolcall_epochs
     if args.identity_epochs > 0:
         identity=sftdata.CustomJSON(args.identity_path)
         tasks+=[identity]*args.identity_epochs
@@ -107,7 +111,8 @@ def build_eval_mixture():
 train_mixture=build_train_mixture()
 if is_main:
     print(f"SFT train mixture: {len(train_mixture):,} rows "
-          f"(MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, identity x{args.identity_epochs})")
+          f"(MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, "
+          f"toolcall x{args.toolcall_epochs}, identity x{args.identity_epochs})")
 train_data_set=sftdata.SFTDataset(
     train_mixture, tokeniz, args.device_batch_size, args.seq_len, device,
     rank=rank, world_size=world_size,

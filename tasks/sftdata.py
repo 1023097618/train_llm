@@ -18,6 +18,7 @@ from pyarrow import parquet as pq
 from tokenizer import tokenizer
 from tasks.basedata import BaseDataset
 from common import data_paths
+from evaluation.sample import calculate
 
 
 class Task:
@@ -101,11 +102,33 @@ class MMLU(ParquetTask):
 GSM8K_TOOL_PATTERN = re.compile(r"(<<[^>]+>>)")
 
 
+# 和推理时完全一致：system 里给出工具 schema（同 Tokenizer.render_prompt_for_completion），
+# 调用格式对应 inference/engine.py 的 safe_execute_function，返回值就是 calculate 的真实输出
+CALCULATOR_TOOLS = "[" + calculate.schema + "]"
+
+
 def calculator_call(expression):
-    # 格式与 inference/engine.py 的 safe_execute_function 对应，函数是 evaluation/sample.py 里的 calculate
     return json.dumps(
         [{"function": {"name": "calculate", "arguments": json.dumps({"expression": expression})}}]
     )
+
+
+def _to_number(text):
+    try:
+        value = float(text.replace(",", ""))
+    except ValueError:
+        return None
+    return int(value) if value.is_integer() else value
+
+
+def calculator_output(expression, result):
+    output = json.loads(calculate(expression))
+    expected = _to_number(result)
+    value = output.get("result")
+    # GSM8K 的表达式偶尔带千分位逗号或笔误，算出来和标注不一致时用标注值，保证和后文一致
+    if expected is not None and (not isinstance(value, (int, float)) or abs(value - expected) > 1e-6 * max(1, abs(expected))):
+        output = {"expression": expression, "result": expected}
+    return json.dumps(output, ensure_ascii=False)
 
 
 class GSM8K(ParquetTask):
@@ -117,19 +140,87 @@ class GSM8K(ParquetTask):
 
     def get_messages(self, index):
         row = self.row(index)
-        messages = [{"role": "user", "content": row["question"]}]
+        messages = [{"role": "system", "content": "", "tools": CALCULATOR_TOOLS},
+                    {"role": "user", "content": row["question"]}]
         text = ""
         for part in GSM8K_TOOL_PATTERN.split(row["answer"]):
             if part.startswith("<<") and part.endswith(">>"):
                 expression, result = part[2:-2].rsplit("=", 1)
                 messages.append({"role": "assistant", "content": text,
                                  "tool_calls": calculator_call(expression)})
-                messages.append({"role": "tool", "content": result})
+                messages.append({"role": "tool", "content": calculator_output(expression, result)})
                 text = ""
             else:
                 text += part
         messages.append({"role": "assistant", "content": text})
         return messages
+
+
+HERMES_TOOL_CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.S)
+HERMES_TOOL_RESPONSE = re.compile(r"<tool_response>\s*(.*?)\s*</tool_response>", re.S)
+
+
+def convert_hermes(row):
+    """hermes 的 system/human/gpt/tool 对话 -> 和推理时一致的 tools / tool_calls 格式；格式不对返回 None。"""
+    # 推理时 system 里是 "[" + fn.schema + "]"，schema 只有 {"function": {...}}，没有 "type"
+    tools = json.loads(row["tools"]) if row.get("tools") else None
+    messages = []
+    if tools:
+        tools = json.dumps([{"function": t.get("function", t)} for t in tools], ensure_ascii=False)
+        messages.append({"role": "system", "content": "", "tools": tools})
+    for turn in row["conversations"][1:]:
+        speaker, value = turn["from"], turn["value"]
+        if speaker == "human":
+            messages.append({"role": "user", "content": value})
+        elif speaker == "gpt":
+            calls = HERMES_TOOL_CALL.findall(value)
+            if not calls:
+                messages.append({"role": "assistant", "content": value.strip()})
+                continue
+            calls = [json.loads(c) for c in calls]
+            messages.append({"role": "assistant", "content": "", "tool_calls": json.dumps(
+                [{"function": {"name": c["name"], "arguments": json.dumps(c["arguments"], ensure_ascii=False)}}
+                 for c in calls], ensure_ascii=False)})
+        elif speaker == "tool":
+            if not messages or not messages[-1].get("tool_calls"):
+                return None
+            # engine 把每个函数的 json 输出用换行拼成一个 tool output
+            responses = [json.loads(r)["content"] for r in HERMES_TOOL_RESPONSE.findall(value)]
+            messages.append({"role": "tool", "content": "\n".join(
+                r if isinstance(r, str) else json.dumps(r, ensure_ascii=False) for r in responses)})
+        else:
+            return None
+    while messages and (messages[-1]["role"] != "assistant" or messages[-1].get("tool_calls")):
+        messages.pop()
+    return messages if any(m["role"] == "user" for m in messages) else None
+
+
+class HermesFunctionCalling(Task):
+    """NousResearch/hermes-function-calling-v1：func-calling 1.9K + glaive 5.2K 条多轮函数调用对话。"""
+    name = "toolcall"
+    files = ("func-calling.json", "glaive-function-calling-5k.json")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.rows = []
+        for name in self.files:
+            path = os.path.join(data_paths.SFT_TOOLCALL, name)
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"{path} not found, run `python -m script.download_sft` first")
+            with open(path, "r", encoding="utf-8") as f:
+                for row in json.load(f):
+                    try:
+                        messages = convert_hermes(row)
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        messages = None
+                    if messages:
+                        self.rows.append(messages)
+
+    def num_rows(self):
+        return len(self.rows)
+
+    def get_messages(self, index):
+        return self.rows[index]
 
 
 class CustomJSON(Task):

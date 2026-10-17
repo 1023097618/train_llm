@@ -50,7 +50,7 @@ fi
 echo ">>> Installing rustbpe from $RUSTBPE_SRC"
 pip install "$RUSTBPE_SRC"
 
-# Register a Jupyter kernel so download.ipynb etc. can use it
+# Register a Jupyter kernel so notebooks (e.g. optimizer/get_coefficient.ipynb) can use it
 python -m ipykernel install --user --name "$ENV_NAME" --display-name "Python ($ENV_NAME)"
 
 # Self-check

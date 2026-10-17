@@ -8,8 +8,10 @@ source /home/vislab/anaconda3/etc/profile.d/conda.sh
 conda activate gpt
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 unset all_proxy ALL_PROXY
+python -m script.download_pretrain --num_shards=180
 python -m script.train_token
 python -m script.eval_token
 python -m script.pretrain --depth=20 --seq_len=2048 --device_batch_size=8
 
-python -m script.train_sft --datasets=config/sft_datasets.json
+python -m script.download_sft
+python -m script.train_sft

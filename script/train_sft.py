@@ -1,15 +1,19 @@
 """Supervised fine-tuning, on one GPU or with one process per GPU.
 
 Examples:
-python -m script.train_sft --datasets=data/sft_datasets.json --use_wandb=0
+python -m script.download_sft
+python -m script.train_sft --use_wandb=0
 CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 \
-    -m script.train_sft --datasets=data/sft_datasets.json --use_wandb=0
+    -m script.train_sft --use_wandb=0
+
+Data mixture follows nanochat's chat_sft.py: SmolTalk + MMLU x3 + GSM8K x4,
+plus our own identity conversations.
 """
 
 import argparse
-import json
 import math
 import os
+from common.data_paths import SFT_IDENTITY
 parser=argparse.ArgumentParser()
 parser.add_argument("--device_batch_size", default=4, type=int, help="batch size per gradient step")
 parser.add_argument("--batch_token", default=2**19, type=int, help="how many token should have in one step")
@@ -20,11 +24,10 @@ parser.add_argument("--save_every", default=200, type=int, help="save the model 
 parser.add_argument("--tokenizer_path", default="weight/tokenizer.pkl", type=str, help="path of tokenizer.pkl, use train_token.py to get tokenizer")
 parser.add_argument("--device_type", default="cuda", choices=("cuda", "cpu"), help="cuda or cpu")
 parser.add_argument("--use_wandb", type=int, default=1, help="if use wandb to log(0 to disable wandb)")
-parser.add_argument(
-    "--datasets", type=str, required=True,
-    help=("path to a JSON dataset manifest; each item supports path, "
-          "type(parquet/jsonl), holdout_last and eval"),
-)
+parser.add_argument("--mmlu_epochs", default=3, type=int, help="epochs of MMLU auxiliary_train in the mixture (teaches multiple choice)")
+parser.add_argument("--gsm8k_epochs", default=4, type=int, help="epochs of GSM8K train in the mixture (teaches math and calculator use)")
+parser.add_argument("--identity_path", default=str(SFT_IDENTITY), type=str, help="jsonl of identity conversations")
+parser.add_argument("--identity_epochs", default=2, type=int, help="epochs of identity conversations in the mixture(0 to disable)")
 parser.add_argument("--pretrained_ckpt_path", type=str, default="weight/pretrained_model.ckpt", help="path of pretrained model checkpoint")
 parser.add_argument("--save_ckpt_path", type=str, default="weight/sft_model.ckpt", help="path to save sft model checkpoint")
 parser.add_argument("--compile_gpt",type=int,default=1,help="compile gpt to speed up training")
@@ -40,7 +43,7 @@ parser.add_argument("--embedding_lr",default=0.3,type=float,help="learning rate 
 parser.add_argument("--matrix_lr",default=0.02,type=float,help="matrix learning rate")
 # model config
 parser.add_argument("--seq_len", default=1024, type=int, help="model sequence len")
-from tasks import sftdata,custom_json,basedata
+from tasks import sftdata
 from tokenizer import tokenizer
 import torch
 import torch.distributed as dist
@@ -81,62 +84,38 @@ gradient_step=batch_size//global_micro_batch
 tokeniz=tokenizer.Tokenizer.from_dict(args.tokenizer_path, device=device)
 
 
-def load_dataset_specs(path):
-    """Load unified dataset definitions from a JSON manifest file."""
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"--datasets manifest does not exist: {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        specs = json.load(f)
-    if not isinstance(specs, list) or not specs:
-        raise ValueError("--datasets manifest must contain a non-empty JSON array")
-    return specs
+def build_train_mixture():
+    mmlu=sftdata.MMLU("auxiliary_train") # 100K rows per epoch
+    gsm8k=sftdata.GSM8K("train") # 7.5K rows per epoch
+    tasks=[sftdata.SmolTalk("train")] # 460K rows of general conversations
+    tasks+=[mmlu]*args.mmlu_epochs
+    tasks+=[gsm8k]*args.gsm8k_epochs
+    if args.identity_epochs > 0:
+        identity=sftdata.CustomJSON(args.identity_path)
+        tasks+=[identity]*args.identity_epochs
+    return sftdata.TaskMixture(tasks)
 
 
-def make_dataset(spec, split, dataset_batch_size, dataset_device=device):
-    if not isinstance(spec, dict) or not spec.get("path"):
-        raise ValueError("each --datasets item must be an object containing path")
-    path = os.path.expanduser(str(spec["path"]))
-    source_type = spec.get("type")
-    if source_type is None:
-        source_type = "jsonl" if path.endswith(".jsonl") or ".jsonl" in path else "parquet"
-    if source_type == "jsonl":
-        if split == "test":
-            raise ValueError("JSONL sources do not provide an automatic evaluation split")
-        dataset = custom_json.CustomJson(
-            path, tokeniz, dataset_batch_size, args.seq_len, dataset_device
-        )
-    elif source_type == "parquet":
-        # SFTDataset accepts a directory and a filename glob separately.
-        data_dir, file_pattern = os.path.split(path)
-        data_dir = data_dir or "."
-        dataset = sftdata.SFTDataset(
-            data_dir, split, tokeniz, dataset_batch_size, args.seq_len, dataset_device,
-            file_pattern=file_pattern or "*.parquet",
-            holdout_last=bool(spec.get("holdout_last", True)),
-        )
-    else:
-        raise ValueError(f"unsupported dataset type {source_type!r}; use parquet or jsonl")
-    if len(dataset) == 0:
-        raise ValueError(f"dataset matched no {split} rows: {path}")
-    return dataset
+def build_eval_mixture():
+    return sftdata.TaskMixture([
+        sftdata.SmolTalk("test"), # 24K rows
+        sftdata.MMLU("test", stop=5200), # 14K rows in test, use 5.2K to match the train ratios
+        sftdata.GSM8K("test", stop=420), # 1.32K rows in test, use 420 to match the train ratios
+    ])
 
 
-dataset_specs = load_dataset_specs(args.datasets)
-eval_data_set = None
-source_batch_size=args.device_batch_size*world_size
-source_device="cpu" if ddp else device
-children = [make_dataset(spec, "train", source_batch_size, source_device)
-            for spec in dataset_specs]
-eval_specs = [spec for spec in dataset_specs
-              if spec.get("type", "jsonl" if ".jsonl" in str(spec["path"]) else "parquet") == "parquet"
-              and spec.get("eval", True)]
-if eval_specs:
-    eval_children = [make_dataset(spec, "test", args.device_batch_size) for spec in eval_specs]
-    eval_data_set = basedata.MixedDataset(*eval_children)
-train_data_set = basedata.MixedDataset(*children)
-if ddp:
-    train_data_set=basedata.BatchShardDataset(
-        train_data_set, rank, world_size, args.device_batch_size, device
+train_mixture=build_train_mixture()
+if is_main:
+    print(f"SFT train mixture: {len(train_mixture):,} rows "
+          f"(MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, identity x{args.identity_epochs})")
+train_data_set=sftdata.SFTDataset(
+    train_mixture, tokeniz, args.device_batch_size, args.seq_len, device,
+    rank=rank, world_size=world_size,
+)
+eval_data_set=None
+if is_main and (args.final_eval or args.eval_every > 0):
+    eval_data_set=sftdata.SFTDataset(
+        build_eval_mixture(), tokeniz, args.device_batch_size, args.seq_len, device,
     )
 if is_main:
     ESTIMATE_TOTAL_TOKEN=train_data_set.estimate_total_token()
@@ -225,8 +204,6 @@ with open(args.pretrained_ckpt_path,"rb") as f:
     del resume_dict
 
 
-if eval_data_set is None and (args.final_eval or args.eval_every > 0):
-    raise ValueError("--datasets needs at least one parquet source with eval=true when evaluation is enabled")
 test_data_loader = lambda: iter(eval_data_set)
 if args.compile_gpt:
     c_gpt=torch.compile(orig_gpt,dynamic=False)

@@ -1,20 +1,180 @@
+"""SFT 数据：nanochat 的对话数据混合 + best-fit 打包加载器。
+
+三层结构：
+- Task：一个数据源，get_example(i) 返回 {"source", "messages"}
+- TaskMixture：把多个 Task 按固定 seed 打乱混在一起，同一个 Task 传多次即多个 epoch
+- SFTDataset：从 TaskMixture 里按 rank 步长取对话，tokenize 后 best-fit 打包成 batch
+"""
+
 import os
 import glob
+import json
 import re
+import numpy as np
+import pyarrow as pa
 import torch
-from typing import Literal
 from pyarrow import parquet as pq
 
 from tokenizer import tokenizer
 from tasks.basedata import BaseDataset
+from common import data_paths
+
+
+class Task:
+    name = "task"
+
+    def __init__(self, start=0, stop=None):
+        self.start = start
+        self.stop = stop
+
+    def num_rows(self):
+        raise NotImplementedError
+
+    def get_messages(self, index):
+        raise NotImplementedError
+
+    def __len__(self):
+        total = self.num_rows()
+        stop = total if self.stop is None else min(self.stop, total)
+        return max(0, stop - self.start)
+
+    def get_example(self, index):
+        return {"source": self.name, "messages": self.get_messages(self.start + index)}
+
+
+class ParquetTask(Task):
+    """只读需要的列，按行随机访问。"""
+
+    def __init__(self, data_dir, split, columns, start=0, stop=None):
+        super().__init__(start, stop)
+        files = sorted(glob.glob(os.path.join(data_dir, f"{split}-*.parquet")))
+        if not files:
+            raise FileNotFoundError(
+                f"no {split}-*.parquet under {data_dir}, run `python -m script.download_sft` first"
+            )
+        table = pa.concat_tables([pq.read_table(f, columns=columns) for f in files])
+        self.columns = {c: table.column(c) for c in columns}
+        self.rows = table.num_rows
+
+    def num_rows(self):
+        return self.rows
+
+    def row(self, index):
+        return {c: col[index].as_py() for c, col in self.columns.items()}
+
+
+class SmolTalk(ParquetTask):
+    """HuggingFaceTB/smol-smoltalk：通用多轮对话，train 460K / test 24K。"""
+    name = "smoltalk"
+
+    def __init__(self, split, **kwargs):
+        super().__init__(data_paths.SFT_SMOLTALK, split, ["messages"], **kwargs)
+
+    def get_messages(self, index):
+        return self.row(index)["messages"]
+
+
+def render_mc(question, letters, choices):
+    # 与 nanochat 的 tasks/common.py 保持一致
+    query = f"Multiple Choice question: {question}\n"
+    query += "".join([f"- {choice}={letter}\n" for letter, choice in zip(letters, choices)])
+    query += "\nRespond only with the letter of the correct answer."
+    return query
+
+
+class MMLU(ParquetTask):
+    """cais/mmlu all：auxiliary_train 100K 选择题，test 14K。"""
+    name = "mmlu"
+    letters = ("A", "B", "C", "D")
+
+    def __init__(self, split, **kwargs):
+        super().__init__(data_paths.SFT_MMLU, split, ["question", "choices", "answer"], **kwargs)
+
+    def get_messages(self, index):
+        row = self.row(index)
+        return [
+            {"role": "user", "content": render_mc(row["question"], self.letters, row["choices"])},
+            {"role": "assistant", "content": self.letters[row["answer"]]},
+        ]
+
+
+GSM8K_TOOL_PATTERN = re.compile(r"(<<[^>]+>>)")
+
+
+def calculator_call(expression):
+    # 格式与 inference/engine.py 的 safe_execute_function 对应，函数是 evaluation/sample.py 里的 calculate
+    return json.dumps(
+        [{"function": {"name": "calculate", "arguments": json.dumps({"expression": expression})}}]
+    )
+
+
+class GSM8K(ParquetTask):
+    """openai/gsm8k main：train 7.5K / test 1.3K，答案里的 <<expr=result>> 转成计算器调用。"""
+    name = "gsm8k"
+
+    def __init__(self, split, **kwargs):
+        super().__init__(data_paths.SFT_GSM8K, split, ["question", "answer"], **kwargs)
+
+    def get_messages(self, index):
+        row = self.row(index)
+        messages = [{"role": "user", "content": row["question"]}]
+        text = ""
+        for part in GSM8K_TOOL_PATTERN.split(row["answer"]):
+            if part.startswith("<<") and part.endswith(">>"):
+                expression, result = part[2:-2].rsplit("=", 1)
+                messages.append({"role": "assistant", "content": text,
+                                 "tool_calls": calculator_call(expression)})
+                messages.append({"role": "tool", "content": result})
+                text = ""
+            else:
+                text += part
+        messages.append({"role": "assistant", "content": text})
+        return messages
+
+
+class CustomJSON(Task):
+    """每行一个 {"messages": [...]} 的 jsonl，比如自己合成的身份认知对话。"""
+    name = "custom"
+
+    def __init__(self, path, **kwargs):
+        super().__init__(**kwargs)
+        with open(path, "r", encoding="utf-8") as f:
+            self.rows = [json.loads(line)["messages"] for line in f if line.strip()]
+
+    def num_rows(self):
+        return len(self.rows)
+
+    def get_messages(self, index):
+        return self.rows[index]
+
+
+class TaskMixture:
+    """确定性地打乱所有 Task 的样本，让各个任务均匀分布在整个训练过程里。"""
+
+    def __init__(self, tasks, seed=42):
+        if not tasks:
+            raise ValueError("TaskMixture requires at least one task")
+        self.tasks = list(tasks)
+        task_ids = np.concatenate([np.full(len(t), i, dtype=np.int32) for i, t in enumerate(self.tasks)])
+        local_ids = np.concatenate([np.arange(len(t), dtype=np.int64) for t in self.tasks])
+        perm = np.random.default_rng(seed).permutation(len(task_ids))
+        self.task_ids = task_ids[perm]
+        self.local_ids = local_ids[perm]
+
+    def __len__(self):
+        return len(self.task_ids)
+
+    def __getitem__(self, index):
+        return self.tasks[self.task_ids[index]].get_example(int(self.local_ids[index]))
 
 
 def preprocess_conversation(conversation):
-    if len(conversation) > 2 and conversation[0]['role'] == 'user' and conversation[1]['role'] == 'user':
-        conversation[0]['role'] = 'system'
-    if conversation[len(conversation) - 1]['role'] == 'user':
-        conversation.pop()
-    return {"source": "sft", "messages": conversation}
+    messages = list(conversation["messages"])
+    if len(messages) > 2 and messages[0]['role'] == 'user' and messages[1]['role'] == 'user':
+        messages[0] = {**messages[0], 'role': 'system'}
+    if messages and messages[-1]['role'] == 'user':
+        messages.pop()
+    return {"source": conversation["source"], "messages": messages}
 
 
 BANNED_PATTERN = re.compile(
@@ -50,66 +210,69 @@ def contains_banned_words(conversation):
 
 
 class SFTDataset(BaseDataset):
-    def __init__(self, data_dir, split: Literal["train", "test"], tokeniz: tokenizer.Tokenizer,
-                 batch_size, seq_len, device, resume_state_dict=None,buffer_capacity=1000,
-                 file_pattern="sft_t2t-*.parquet", holdout_last=True):
+    """rank r 依次取 mixture 的第 r, r+world_size, ... 条对话，在本地打包成 (x, y, segment_ids)。"""
+
+    def __init__(self, mixture: TaskMixture, tokeniz: tokenizer.Tokenizer,
+                 batch_size, seq_len, device, rank=0, world_size=1,
+                 resume_state_dict=None, buffer_capacity=1000):
+        self.mixture = mixture
         self.tokeniz = tokeniz
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.device = device
+        self.rank = rank
+        self.world_size = world_size
         self.resume_state_dict = resume_state_dict
-        self.buffer_capacity=buffer_capacity
-        data_files = sorted(glob.glob(os.path.join(data_dir, file_pattern)))
-        if holdout_last:
-            self.data_files = data_files[:-1] if split == 'train' else data_files[-1:]
-        else:
-            # Small specialist datasets commonly have only one shard.  In that
-            # case use all rows; callers can disable evaluation or provide a
-            # separate validation run instead of silently creating an empty set.
-            self.data_files = data_files
+        self.buffer_capacity = buffer_capacity
+        self.pin_memory = torch.device(device).type == "cuda"
 
     def __len__(self):
-        return sum(pq.ParquetFile(f).metadata.num_rows for f in self.data_files)
+        return len(self.mixture)
 
-    def _get_file_row(self, batch_size, epoch, f_idx, rg_idx):
+    def _tokenize(self, example):
+        """返回 (token, mask)；被过滤或超长的对话返回 None。"""
+        conversation = preprocess_conversation(example)
+        if not conversation["messages"] or contains_banned_words(conversation):
+            return None
+        token, mask = self.tokeniz.render_conversation(conversation)
+        if len(token) > self.seq_len + 1:
+            return None
+        return token, mask
+
+    def _get_conversation(self, epoch, cursor):
         while True:
-            while f_idx < len(self.data_files):
-                pq_file = pq.ParquetFile(self.data_files[f_idx])
-                while rg_idx < pq_file.num_row_groups:
-                    row_group = pq_file.read_row_group(rg_idx)['conversations'].to_pylist()
-                    for start in range(0, len(row_group), batch_size):
-                        conversations = row_group[start:start + batch_size]
-                        conversations = [preprocess_conversation(c) for c in conversations]
-                        conversations = [c for c in conversations if not contains_banned_words(c)]
-                        yield conversations, epoch, f_idx, rg_idx
-                    rg_idx += 1
-                rg_idx = 0
-                f_idx += 1
-            f_idx = 0
+            while cursor < len(self.mixture):
+                example = self.mixture[cursor]
+                cursor += self.world_size
+                rendered = self._tokenize(example)
+                if rendered is not None:
+                    yield *rendered, epoch, cursor
+            cursor = self.rank
             epoch += 1
 
     def __iter__(self):
         tokeniz, seq_len, batch_size, device = self.tokeniz, self.seq_len, self.batch_size, self.device
-        epoch, f_idx, rg_idx = 0, 0, 0
+        epoch, cursor = 0, self.rank
         if self.resume_state_dict:
             epoch = self.resume_state_dict['epoch']
-            f_idx = self.resume_state_dict['f_idx']
-            rg_idx = self.resume_state_dict['rg_idx']
-        text_loader = self._get_file_row(128, epoch, f_idx, rg_idx)
+            cursor = self.resume_state_dict['cursor']
+        conversation_loader = self._get_conversation(epoch, cursor)
         eos = tokeniz.special_token['<|/doc|>']
         token_buffer = []
         mask_buffer = []
 
         def refill_buffer():
-            nonlocal epoch, f_idx, rg_idx
+            nonlocal epoch, cursor
             while len(token_buffer) < self.buffer_capacity:
-                conversations, epoch, f_idx, rg_idx = next(text_loader)
-                for conversation in conversations:
-                    token, mask = tokeniz.render_conversation(conversation)
-                    if len(token) > seq_len + 1:
-                        continue
-                    token_buffer.append(token)
-                    mask_buffer.append(mask)
+                token, mask, epoch, cursor = next(conversation_loader)
+                token_buffer.append(token)
+                mask_buffer.append(mask)
+
+        def to_device(tensor):
+            tensor = tensor.contiguous()
+            if self.pin_memory:
+                tensor = tensor.pin_memory()
+            return tensor.to(device=device, non_blocking=True)
 
         while True:
             token_batch = []
@@ -150,19 +313,21 @@ class SFTDataset(BaseDataset):
             token_batch = torch.tensor(token_batch)
             mask_batch = torch.tensor(mask_batch)
             segment_batch = torch.tensor(segment_batch)
-            x = token_batch[:, :-1].contiguous().pin_memory().to(device=device, non_blocking=True)
-            y = token_batch[:, 1:].contiguous().pin_memory().to(device=device, non_blocking=True)
-            mask_batch = mask_batch[:, :-1].contiguous().pin_memory().to(device=device, non_blocking=True)
+            x = to_device(token_batch[:, :-1])
+            y = to_device(token_batch[:, 1:])
+            mask_batch = to_device(mask_batch[:, :-1])
             y[mask_batch == tokenizer.Ignored.YES] = -1
-            segment_batch = segment_batch[:, :-1].contiguous().pin_memory().to(device=device, non_blocking=True)
-            state_dict = {'epoch': epoch, 'f_idx': f_idx, 'rg_idx': rg_idx}
+            segment_batch = to_device(segment_batch[:, :-1])
+            state_dict = {'epoch': epoch, 'cursor': cursor}
             yield x, y, segment_batch, state_dict
-    
-    def _count_tokens(self, conversations):
-        total = 0
-        for conversation in conversations:
-            token, _ = self.tokeniz.render_conversation(conversation)
-            if len(token) > self.seq_len + 1:
-                continue
-            total += len(token)
-        return total
+
+    def estimate_total_token(self, sample_num=2000):
+        # mixture 已经打乱，取前 sample_num 条估平均长度，再乘总条数（所有 rank 合计）
+        total_row = len(self.mixture)
+        sample_num = min(sample_num, total_row)
+        token_sum = 0
+        for index in range(sample_num):
+            rendered = self._tokenize(self.mixture[index])
+            if rendered is not None:
+                token_sum += len(rendered[0])
+        return int(token_sum / sample_num * total_row)

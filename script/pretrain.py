@@ -1,6 +1,6 @@
 """
 pretrain a language model
-before run this script, you need train a tokenizer(script.train_token) and download data files(14.6 GB)
+before run this script, you need download data files(script.download_pretrain, 14.6 GB) and train a tokenizer(script.train_token)
 uasge:
 python -m script.pretrain --use_wandb=0
 or

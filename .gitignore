@@ -4,3 +4,4 @@ data/*
 wandb/*
 weight/*
 log/*
+test.ipynb

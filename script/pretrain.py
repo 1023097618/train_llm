@@ -281,7 +281,8 @@ def save_model(step1,train_loader_state_dict,optimizer_states):
                 "best_bpb":best_bpb,
                 "runid":run.id if args.use_wandb else None,
                 "model_config":vars(config),
-                "num_workers": args.num_workers
+                "num_workers": args.num_workers,
+                "batch_token": args.batch_token
             },tmp
         ),
         os.replace(tmp,args.save_ckpt_path)

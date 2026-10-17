@@ -17,7 +17,7 @@ from common.data_paths import SFT_IDENTITY
 parser=argparse.ArgumentParser()
 parser.add_argument("--device_batch_size", default=4, type=int, help="batch size per gradient step")
 parser.add_argument("--batch_token", default=2**19, type=int, help="how many token should have in one step")
-parser.add_argument("--eval_token", default=80*2048, type=int, help="how many token we use for eval")
+parser.add_argument("--eval_token", default=8*2**20, type=int, help="how many token we use for eval")
 parser.add_argument("--eval_every", default=200, type=int, help="evaluate the model per eval_every steps")
 parser.add_argument("--sample_every", default=200, type=int, help="sample the model per sample_every steps")
 parser.add_argument("--save_every", default=200, type=int, help="save the model per save_every steps")
@@ -41,9 +41,10 @@ parser.add_argument("--final_eval", default=1, type=int, help="evaluate before t
 parser.add_argument("--init_lr_frac", default=0.8, type=float, help="initial lr fraction relative to pretrain lr")
 parser.add_argument("--warm_down_ratio", default=0.5, type=float, help="lr warmdown ratio")
 parser.add_argument("--final_lr_frac", default=0., type=float, help="min lr fraction")
-parser.add_argument("--lmhead_lr",default=0.008,type=float,help="lmhead learning rate")
-parser.add_argument("--embedding_lr",default=0.3,type=float,help="learning rate for embedding")
-parser.add_argument("--matrix_lr",default=0.02,type=float,help="matrix learning rate")
+# lr 默认继承预训练（和 nanochat 一样）；显式指定时按 pretrain 的规则乘 sqrt(batch_token/B_REF)
+parser.add_argument("--lmhead_lr",default=None,type=float,help="lmhead learning rate (default: inherit from pretrain)")
+parser.add_argument("--embedding_lr",default=None,type=float,help="learning rate for embedding (default: inherit from pretrain)")
+parser.add_argument("--matrix_lr",default=None,type=float,help="matrix learning rate (default: inherit from pretrain)")
 # model config
 parser.add_argument("--seq_len", default=1024, type=int, help="model sequence len")
 from tasks import sftdata
@@ -149,6 +150,7 @@ if args.num_workers > 0:
 train_data_loader=iter(DataLoader(train_data_set,**loader_kwargs))
 loader_state=dict(train_resume_state or {})
 SCALE_RATIO=1 #to make the progress more quick
+B_REF=2**19 # 与 pretrain.py 的 B_REF 保持一致
 if device.startswith("cuda"):
     device_name=torch.cuda.get_device_name(local_rank)
     OPTIMAL_FLOPS=common.get_peak_flops(device_name)*world_size
@@ -184,13 +186,9 @@ config.seq_len=args.seq_len
 orig_gpt=gpt.GPT(config,device,tokeniz)
 orig_gpt.init_weight()
 orig_gpt.load_state_dict(new_dict)
-param_groups=orig_gpt.get_param_groups(
-    lmhead_lr=args.lmhead_lr,
-    embedding_lr=args.embedding_lr,
-    matrix_lr=args.matrix_lr
-)
+# lr/wd 等超参数随后由 checkpoint 里的 param_groups 覆盖
+param_groups=orig_gpt.get_param_groups()
 optimiz=optimizer.MuonOptimizer(param_groups)
-optimiz_data=optimiz.param_groups
 optimizer_state=resume_dict['optimizer_state_dict']
 if isinstance(optimizer_state, list):
     if len(optimizer_state) != world_size:
@@ -226,9 +224,25 @@ if ddp and not isinstance(resume_dict['optimizer_state_dict'], list):
                     if key in state:
                         state[key]=state[key][start:stop].clone()
 if resume_ckpt is None:
-    for (group,orig_group) in zip(optimiz.param_groups,optimiz_data):
-        group['init_lr']=orig_group['init_lr']*args.init_lr_frac
+    # 预训练保存的 init_lr = 配置 lr * sqrt(pretrain_batch_token/B_REF)，SFT batch 不同时再按 sqrt(B) 换算
+    pretrain_batch_token=resume_dict.get("batch_token", args.batch_token)
+    batch_scale=(args.batch_token/pretrain_batch_token)**0.5
+    override_scale=(args.batch_token/B_REF)**0.5
+    for group in optimiz.param_groups:
+        if group['kind']=='muon':
+            override=args.matrix_lr
+        elif group['params'][0] is orig_gpt.lm_head.weight:
+            override=args.lmhead_lr
+        else:
+            override=args.embedding_lr
+        base_lr=override*override_scale if override is not None else group['init_lr']*batch_scale
+        group['init_lr']=base_lr*args.init_lr_frac
         group['lr']=group['init_lr']
+        # 预训练末尾 wd 已经衰减，SFT 不再使用 weight decay（和 nanochat 一致）
+        group['wd']=0.
+        group['init_wd']=0.
+    if is_main:
+        print("SFT init lr:", [f"{g['kind']}:{g['init_lr']:.5f}" for g in optimiz.param_groups])
 else:
     # 保存的 param_groups 里 init_lr 已经乘过 init_lr_frac，不能再缩放一次
     start_iter=resume_ckpt['step']+1
@@ -237,7 +251,6 @@ else:
         print(f"resumed from {args.save_ckpt_path}, continue at step {start_iter}/{total_steps}")
 del param_groups
 del new_dict
-del optimiz_data
 del resume_dict
 resume_ckpt=None
 

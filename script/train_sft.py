@@ -31,6 +31,8 @@ parser.add_argument("--identity_path", default=str(SFT_IDENTITY), type=str, help
 parser.add_argument("--identity_epochs", default=2, type=int, help="epochs of identity conversations in the mixture(0 to disable)")
 parser.add_argument("--pretrained_ckpt_path", type=str, default="weight/pretrained_model.ckpt", help="path of pretrained model checkpoint")
 parser.add_argument("--save_ckpt_path", type=str, default="weight/sft_model.ckpt", help="path to save sft model checkpoint")
+parser.add_argument("--resume",default=-1,type=int,help="resume from --save_ckpt_path (-1 is disable resume)")
+parser.add_argument("--num_workers",type=int,default=4,help="dataloader worker number")
 parser.add_argument("--compile_gpt",type=int,default=1,help="compile gpt to speed up training")
 parser.add_argument("--epochs", default=1.0, type=float, help="approximate passes over the selected dataset")
 parser.add_argument("--max_steps", default=0, type=int, help="override calculated steps when greater than zero")
@@ -48,6 +50,7 @@ from tasks import sftdata
 from tokenizer import tokenizer
 import torch
 import torch.distributed as dist
+from torch.utils.data import DataLoader
 from model import gpt
 from evaluation import bpbeval,sample
 import time
@@ -108,19 +111,29 @@ def build_eval_mixture():
     ])
 
 
+resume_ckpt=None
+train_resume_state=None
+if args.resume!=-1:
+    with open(args.save_ckpt_path,"rb") as f:
+        resume_ckpt=torch.load(f,map_location="cpu",weights_only=False)
+    assert resume_ckpt.get("num_workers") == args.num_workers, "resume 时 num_workers 必须与保存时一致"
+    train_resume_state=resume_ckpt['train_loader_state_dict']
+    if ddp:
+        train_resume_state=train_resume_state[rank]
+
 train_mixture=build_train_mixture()
 if is_main:
     print(f"SFT train mixture: {len(train_mixture):,} rows "
           f"(MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, "
           f"toolcall x{args.toolcall_epochs}, identity x{args.identity_epochs})")
 train_data_set=sftdata.SFTDataset(
-    train_mixture, tokeniz, args.device_batch_size, args.seq_len, device,
-    rank=rank, world_size=world_size,
+    train_mixture, tokeniz, args.device_batch_size, args.seq_len,
+    rank=rank, world_size=world_size, resume_state_dict=train_resume_state,
 )
 eval_data_set=None
 if is_main and (args.final_eval or args.eval_every > 0):
     eval_data_set=sftdata.SFTDataset(
-        build_eval_mixture(), tokeniz, args.device_batch_size, args.seq_len, device,
+        build_eval_mixture(), tokeniz, args.device_batch_size, args.seq_len,
     )
 if is_main:
     ESTIMATE_TOTAL_TOKEN=train_data_set.estimate_total_token()
@@ -130,7 +143,11 @@ if ddp:
     total_token_holder=[ESTIMATE_TOTAL_TOKEN]
     dist.broadcast_object_list(total_token_holder, src=0)
     ESTIMATE_TOTAL_TOKEN=total_token_holder[0]
-train_data_loader=iter(train_data_set)
+loader_kwargs = dict(batch_size=None, num_workers=args.num_workers, pin_memory=device.startswith("cuda"))
+if args.num_workers > 0:
+    loader_kwargs["prefetch_factor"] = 4
+train_data_loader=iter(DataLoader(train_data_set,**loader_kwargs))
+loader_state=dict(train_resume_state or {})
 SCALE_RATIO=1 #to make the progress more quick
 if device.startswith("cuda"):
     device_name=torch.cuda.get_device_name(local_rank)
@@ -149,67 +166,83 @@ pbar=common.get_pbar() if is_main else None
 config_all=vars(args)
 if args.use_wandb and is_main:
     import wandb
-    run=wandb.init(entity="enyuwang1023097618-123",project="mygpt",config=config_all)
+    if resume_ckpt is not None:
+        run=wandb.init(entity="enyuwang1023097618-123",project="mygpt",config=config_all,resume='allow',id=resume_ckpt['runid'])
+    else:
+        run=wandb.init(entity="enyuwang1023097618-123",project="mygpt",config=config_all)
 
 
-
-with open(args.pretrained_ckpt_path,"rb") as f:
-    resume_dict=torch.load(f,map_location='cpu')
-    new_dict=common.strip_prefix(resume_dict['model_state'])
-    config=gpt.GPTConfig(**resume_dict['model_config'])
-    config.seq_len=args.seq_len
-    orig_gpt=gpt.GPT(config,device,tokeniz)
-    orig_gpt.init_weight()
-    orig_gpt.load_state_dict(new_dict)
-    param_groups=orig_gpt.get_param_groups(
-        lmhead_lr=args.lmhead_lr,
-        embedding_lr=args.embedding_lr,
-        matrix_lr=args.matrix_lr
-    )
-    optimiz=optimizer.MuonOptimizer(param_groups)
-    optimiz_data=optimiz.param_groups
-    optimizer_state=resume_dict['optimizer_state_dict']
-    if isinstance(optimizer_state, list):
-        if len(optimizer_state) != world_size:
-            raise ValueError(
-                "pretrained checkpoint optimizer state was saved for "
-                f"{len(optimizer_state)} ranks, but this run uses {world_size}"
-            )
-        optimizer_state=optimizer_state[rank]
-    optimiz.load_state_dict(optimizer_state)
-    if ddp and not isinstance(resume_dict['optimizer_state_dict'], list):
-        # A single-rank checkpoint stores full optimizer buffers. MuonOptimizer
-        # shards those buffers by parameter rows/parameter groups under DDP.
-        for group in optimiz.param_groups:
-            if group['kind'] == 'muon':
-                state=optimiz.state.get(group['params'][0], {})
-                chunk_size=math.ceil(len(group['params'])/world_size)
+# resume 时从 SFT checkpoint 恢复模型和优化器，否则从预训练 checkpoint 开始
+if resume_ckpt is not None:
+    resume_dict=resume_ckpt
+else:
+    with open(args.pretrained_ckpt_path,"rb") as f:
+        resume_dict=torch.load(f,map_location='cpu')
+new_dict=common.strip_prefix(resume_dict['model_state'])
+config=gpt.GPTConfig(**resume_dict['model_config'])
+config.seq_len=args.seq_len
+orig_gpt=gpt.GPT(config,device,tokeniz)
+orig_gpt.init_weight()
+orig_gpt.load_state_dict(new_dict)
+param_groups=orig_gpt.get_param_groups(
+    lmhead_lr=args.lmhead_lr,
+    embedding_lr=args.embedding_lr,
+    matrix_lr=args.matrix_lr
+)
+optimiz=optimizer.MuonOptimizer(param_groups)
+optimiz_data=optimiz.param_groups
+optimizer_state=resume_dict['optimizer_state_dict']
+if isinstance(optimizer_state, list):
+    if len(optimizer_state) != world_size:
+        raise ValueError(
+            "checkpoint optimizer state was saved for "
+            f"{len(optimizer_state)} ranks, but this run uses {world_size}"
+        )
+    optimizer_state=optimizer_state[rank]
+elif ddp and resume_ckpt is not None:
+    raise ValueError("SFT checkpoint was saved by a single process, resume it without torchrun")
+optimiz.load_state_dict(optimizer_state)
+if ddp and not isinstance(resume_dict['optimizer_state_dict'], list):
+    # A single-rank checkpoint stores full optimizer buffers. MuonOptimizer
+    # shards those buffers by parameter rows/parameter groups under DDP.
+    for group in optimiz.param_groups:
+        if group['kind'] == 'muon':
+            state=optimiz.state.get(group['params'][0], {})
+            chunk_size=math.ceil(len(group['params'])/world_size)
+            start=rank*chunk_size
+            stop=min(start+chunk_size, len(group['params']))
+            for key in ('momentum_buffer1', 'momentum_buffer2'):
+                if key in state:
+                    state[key]=state[key][start:stop].clone()
+        elif group['kind'] == 'adamw':
+            for param in group['params']:
+                if param.numel() < 1024 or param.shape[0] < world_size:
+                    continue
+                state=optimiz.state.get(param, {})
+                chunk_size=math.ceil(param.shape[0]/world_size)
                 start=rank*chunk_size
-                stop=min(start+chunk_size, len(group['params']))
-                for key in ('momentum_buffer1', 'momentum_buffer2'):
+                stop=min(start+chunk_size, param.shape[0])
+                for key in ('param_avg', 'param_avg_sq'):
                     if key in state:
                         state[key]=state[key][start:stop].clone()
-            elif group['kind'] == 'adamw':
-                for param in group['params']:
-                    if param.numel() < 1024 or param.shape[0] < world_size:
-                        continue
-                    state=optimiz.state.get(param, {})
-                    chunk_size=math.ceil(param.shape[0]/world_size)
-                    start=rank*chunk_size
-                    stop=min(start+chunk_size, param.shape[0])
-                    for key in ('param_avg', 'param_avg_sq'):
-                        if key in state:
-                            state[key]=state[key][start:stop].clone()
+if resume_ckpt is None:
     for (group,orig_group) in zip(optimiz.param_groups,optimiz_data):
         group['init_lr']=orig_group['init_lr']*args.init_lr_frac
         group['lr']=group['init_lr']
-    del param_groups
-    del new_dict
-    del optimiz_data
-    del resume_dict
+else:
+    # 保存的 param_groups 里 init_lr 已经乘过 init_lr_frac，不能再缩放一次
+    start_iter=resume_ckpt['step']+1
+    best_bpb=resume_ckpt['best_bpb']
+    if is_main:
+        print(f"resumed from {args.save_ckpt_path}, continue at step {start_iter}/{total_steps}")
+del param_groups
+del new_dict
+del optimiz_data
+del resume_dict
+resume_ckpt=None
 
 
-test_data_loader = lambda: iter(eval_data_set)
+test_data_loader = lambda: DataLoader(eval_data_set,batch_size=None,num_workers=0)
 if args.compile_gpt:
     c_gpt=torch.compile(orig_gpt,dynamic=False)
 else:
@@ -235,7 +268,8 @@ def get_momentum(step):
     else:
         return 0.95
 
-def save_model(train_loader_state_dict,bpb=None):
+def save_model(step,train_loader_state_dict,bpb=None):
+    """step 是已经完成的最后一个 optimizer step，resume 时从 step+1 继续（和 pretrain 一致）。"""
     global best_bpb
     optimizer_state=optimiz.state_dict()
     if ddp:
@@ -258,20 +292,20 @@ def save_model(train_loader_state_dict,bpb=None):
                 "model_config":vars(config),
                 "optimizer_state_dict":optimizer_states,
                 "train_loader_state_dict":train_loader_states,
-                "step":now_step,
+                "step":step,
                 "best_bpb":best_bpb,
-                "runid":run.id if args.use_wandb else None
+                "runid":run.id if args.use_wandb else None,
+                "num_workers":args.num_workers
             },tmp
         )
         os.replace(tmp,args.save_ckpt_path)
         print("model saved")
     if ddp:
         dist.barrier()
-train_loader_state_dict=None
 max_dump_save=3
 for now_step in range(start_iter,total_steps):
     bpb=None
-    if args.eval_every > 0 and now_step%args.eval_every==0 and now_step!=0:
+    if args.eval_every > 0 and now_step%args.eval_every==0 and now_step!=start_iter:
         if is_main:
             bpb=bpbeval.bpb_eval(orig_gpt,eval_step,test_data_loader(),token_bytes,device,segment=True)
             val_log_data={"val/bpb":bpb}
@@ -280,13 +314,14 @@ for now_step in range(start_iter,total_steps):
                 run.log(data=val_log_data,step=now_step)
         if ddp:
             dist.barrier()
-    if args.sample_every > 0 and now_step%args.sample_every==0 and now_step!=0:
+    if args.sample_every > 0 and now_step%args.sample_every==0 and now_step!=start_iter:
         if is_main:
             sample.sample_chat(orig_gpt,tokeniz,args.seq_len,device)
         if ddp:
             dist.barrier()
-    if args.save_every > 0 and now_step%args.save_every==0 and now_step!=0:
-        save_model(train_loader_state_dict,bpb)
+    if args.save_every > 0 and now_step%args.save_every==0 and now_step!=start_iter:
+        # 在本 step 训练之前保存，所以已完成的是 now_step-1
+        save_model(now_step-1,loader_state,bpb)
     t1=time.perf_counter()
     progress = now_step/total_steps
     total_loss=torch.tensor(0.,device=device)
@@ -298,7 +333,11 @@ for now_step in range(start_iter,total_steps):
             g['momentum1']=momentum
     optimiz.zero_grad(set_to_none=True)
     for i in range(gradient_step):
-        x,y,segment_batch,train_loader_state_dict=next(train_data_loader)
+        x,y,segment_batch,data_loader_state=next(train_data_loader)
+        loader_state[data_loader_state['worker']]=data_loader_state
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
+        segment_batch = segment_batch.to(device, non_blocking=True)
         output=c_gpt(x,y,segment_ids=segment_batch)
         loss=output.loss
         loss/=gradient_step
@@ -319,7 +358,7 @@ for now_step in range(start_iter,total_steps):
         pbar.refresh()
         pbar.set_postfix_str(f"step {now_step}: time used {usedtime:.2f}, gpu usage {optimal_time/usedtime:.2f}, loss: {total_loss.item()}")
 
-save_model(train_loader_state_dict)
+save_model(total_steps-1,loader_state)
 if args.use_wandb and is_main:
     run.finish()
 if is_main:

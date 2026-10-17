@@ -3,7 +3,7 @@
 三层结构：
 - Task：一个数据源，get_example(i) 返回 {"source", "messages"}
 - TaskMixture：把多个 Task 按固定 seed 打乱混在一起，同一个 Task 传多次即多个 epoch
-- SFTDataset：从 TaskMixture 里按 rank 步长取对话，tokenize 后 best-fit 打包成 batch
+- SFTDataset：从 TaskMixture 里按 (rank, worker) 步长取对话，tokenize 后 best-fit 打包成 batch
 """
 
 import os
@@ -14,6 +14,7 @@ import numpy as np
 import pyarrow as pa
 import torch
 from pyarrow import parquet as pq
+from torch.utils.data import get_worker_info
 
 from tokenizer import tokenizer
 from tasks.basedata import BaseDataset
@@ -301,21 +302,21 @@ def contains_banned_words(conversation):
 
 
 class SFTDataset(BaseDataset):
-    """rank r 依次取 mixture 的第 r, r+world_size, ... 条对话，在本地打包成 (x, y, segment_ids)。"""
+    """和 PretrainDataset 一样配合 DataLoader 多 worker 使用：shard_id = rank*num_workers + worker_id，
+    每个 shard 依次取 mixture 的第 shard_id, shard_id+num_shards, ... 条对话，打包成 CPU 上的 (x, y, segment_ids)。
+    resume_state_dict 以 worker id 为 key。"""
 
     def __init__(self, mixture: TaskMixture, tokeniz: tokenizer.Tokenizer,
-                 batch_size, seq_len, device, rank=0, world_size=1,
+                 batch_size, seq_len, rank=0, world_size=1,
                  resume_state_dict=None, buffer_capacity=1000):
         self.mixture = mixture
         self.tokeniz = tokeniz
         self.batch_size = batch_size
         self.seq_len = seq_len
-        self.device = device
         self.rank = rank
         self.world_size = world_size
         self.resume_state_dict = resume_state_dict
         self.buffer_capacity = buffer_capacity
-        self.pin_memory = torch.device(device).type == "cuda"
 
     def __len__(self):
         return len(self.mixture)
@@ -330,24 +331,29 @@ class SFTDataset(BaseDataset):
             return None
         return token, mask
 
-    def _get_conversation(self, epoch, cursor):
+    def _get_conversation(self, epoch, cursor, shard_id, num_shards):
         while True:
             while cursor < len(self.mixture):
                 example = self.mixture[cursor]
-                cursor += self.world_size
+                cursor += num_shards
                 rendered = self._tokenize(example)
                 if rendered is not None:
                     yield *rendered, epoch, cursor
-            cursor = self.rank
+            cursor = shard_id
             epoch += 1
 
     def __iter__(self):
-        tokeniz, seq_len, batch_size, device = self.tokeniz, self.seq_len, self.batch_size, self.device
-        epoch, cursor = 0, self.rank
-        if self.resume_state_dict:
-            epoch = self.resume_state_dict['epoch']
-            cursor = self.resume_state_dict['cursor']
-        conversation_loader = self._get_conversation(epoch, cursor)
+        info = get_worker_info()
+        (wid, nw) = (info.id, info.num_workers) if info is not None else (0, 1)
+        shard_id = self.rank * nw + wid
+        num_shards = self.world_size * nw
+        tokeniz, seq_len, batch_size = self.tokeniz, self.seq_len, self.batch_size
+        epoch, cursor = 0, shard_id
+        resume = (self.resume_state_dict or {}).get(wid)
+        if resume:
+            epoch = resume['epoch']
+            cursor = resume['cursor']
+        conversation_loader = self._get_conversation(epoch, cursor, shard_id, num_shards)
         eos = tokeniz.special_token['<|/doc|>']
         token_buffer = []
         mask_buffer = []
@@ -358,12 +364,6 @@ class SFTDataset(BaseDataset):
                 token, mask, epoch, cursor = next(conversation_loader)
                 token_buffer.append(token)
                 mask_buffer.append(mask)
-
-        def to_device(tensor):
-            tensor = tensor.contiguous()
-            if self.pin_memory:
-                tensor = tensor.pin_memory()
-            return tensor.to(device=device, non_blocking=True)
 
         while True:
             token_batch = []
@@ -404,12 +404,11 @@ class SFTDataset(BaseDataset):
             token_batch = torch.tensor(token_batch)
             mask_batch = torch.tensor(mask_batch)
             segment_batch = torch.tensor(segment_batch)
-            x = to_device(token_batch[:, :-1])
-            y = to_device(token_batch[:, 1:])
-            mask_batch = to_device(mask_batch[:, :-1])
-            y[mask_batch == tokenizer.Ignored.YES] = -1
-            segment_batch = to_device(segment_batch[:, :-1])
-            state_dict = {'epoch': epoch, 'cursor': cursor}
+            x = token_batch[:, :-1].contiguous()
+            y = token_batch[:, 1:].contiguous()
+            y[mask_batch[:, :-1] == tokenizer.Ignored.YES] = -1
+            segment_batch = segment_batch[:, :-1].contiguous()
+            state_dict = {'worker': wid, 'epoch': epoch, 'cursor': cursor}
             yield x, y, segment_batch, state_dict
 
     def estimate_total_token(self, sample_num=2000):

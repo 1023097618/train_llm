@@ -1,6 +1,11 @@
+import argparse
 from  tokenizer import tokenizer
 import tiktoken
 import pandas as pd
+
+parser=argparse.ArgumentParser(description="compare our tokenizer with gpt2/gpt4 on sample texts")
+parser.add_argument("--tokenizer_path",type=str,default="weight/tokenizer.pkl",help="path of tokenizer.pkl")
+args=parser.parse_args()
 
 
 news_text = r"""
@@ -68,7 +73,7 @@ all_text = [
     ("science", science_text)
 ]
 
-outrs=tokenizer.Tokenizer.from_dict("weight/tokenizer.pkl")
+outrs=tokenizer.Tokenizer.from_dict(args.tokenizer_path)
 
 tokenizers={
     "gpt2":tiktoken.get_encoding("gpt2"),

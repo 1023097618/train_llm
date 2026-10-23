@@ -3,6 +3,6 @@ ref/*
 data/*
 wandb/*
 weight/*
-weight_safetensor/*
+weight_vllm/*
 log/*
 test.ipynb

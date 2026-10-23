@@ -7,7 +7,7 @@ from common import common
 
 parser=argparse.ArgumentParser()
 parser.add_argument("--ckpt_path",type=str,default="weight/sft_model.ckpt",help="path of model checkpoint")
-parser.add_argument("--out_dir",type=str,default=None,help="output folder (default: <ckpt name> next to the ckpt)")
+parser.add_argument("--out_dir",type=str,default="weight_safetensor",help="output folder (default: <ckpt name> next to the ckpt)")
 parser.add_argument("--dtype",type=str,default=None,choices=["fp32","bf16","fp16"],help="cast floating tensors, keep original dtype if not set")
 args=parser.parse_args()
 

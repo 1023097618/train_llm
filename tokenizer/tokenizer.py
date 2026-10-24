@@ -1,3 +1,4 @@
+import json
 import copy
 import pickle
 from typing import List, Literal
@@ -220,7 +221,8 @@ class Tokenizer:
     
     def render_prompt_for_completion(self,system_prompt="",user_prompt="",register_functions=[]):
         content=[]
-        function_prompt="["+','.join([func.schema for func in register_functions])+"]"
+        # same serialization as the training data (json.dumps of the list, ", " between tools) and the HF chat template
+        function_prompt=json.dumps([json.loads(func.schema) for func in register_functions],ensure_ascii=False)
         if system_prompt or register_functions:
             content.append({"role":"system","content":system_prompt,"tools":function_prompt})
         content.append({"role":"user","content":user_prompt})

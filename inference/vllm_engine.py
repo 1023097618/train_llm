@@ -21,7 +21,7 @@ from inference.engine import execute_tool_call
 def export_for_vllm(model, out_dir, eos_token_id):
     """write config.json + model.safetensors (bf16) of a model/gpt.py GPT"""
     from safetensors.torch import save_file
-    from inference.vllm_model import hf_config
+    from inference.vllm_config import hf_config
     os.makedirs(out_dir, exist_ok=True)
     state = {k: v.detach().to(torch.bfloat16).contiguous().clone().cpu()
              for k, v in model.state_dict().items() if k not in ("cos", "sin")}

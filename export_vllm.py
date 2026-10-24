@@ -1,3 +1,16 @@
+"""Export a checkpoint (model/gpt.py) as a vLLM model folder: model.safetensors, config.json,
+tokenizer.json / tokenizer_config.json (with a chat template identical to Tokenizer.render_conversation).
+
+usage:
+python export_vllm.py --ckpt_path=weight/d20/sft_model.ckpt --tokenizer_path=weight/d20/tokenizer.pkl --out_dir=weight_vllm --dtype=bf16
+
+load it in vLLM (the architecture must be registered first):
+    from vllm import LLM, ModelRegistry
+    from inference.vllm_model import NanoGPTForCausalLM
+    ModelRegistry.register_model("NanoGPTForCausalLM", NanoGPTForCausalLM)
+    llm = LLM(model="weight_vllm")
+    llm.chat([{"role": "user", "content": "hi"}])
+"""
 import argparse
 import json
 import os
@@ -141,41 +154,11 @@ with open(os.path.join(out_dir,"tokenizer_config.json"),"w",encoding="utf-8") as
 with open(os.path.join(out_dir,"special_tokens_map.json"),"w",encoding="utf-8") as f:
     json.dump({"eos_token":eos,"pad_token":eos,"additional_special_tokens":tokenizer_config["additional_special_tokens"]},f,ensure_ascii=False,indent=2)
 # ---- config: HF style fields so vLLM can build the model ----
+# shared with the RL / eval vLLM engine (inference/vllm_engine.py), so the export always matches model/gpt.py;
 # model_type "llama" only lets transformers' AutoConfig parse the file,
-# the architecture itself must be registered to vLLM as a custom model
-head_dim=config["model_dim"]//config["query_num"]
-pattern=config["window_pattern"]
-layer_types=["sliding_attention" if pattern[i%len(pattern)]=="S" else "full_attention" for i in range(config["n_layer"])]
-hf_config={
-    "architectures":["NanoGPTForCausalLM"],
-    "model_type":"llama",
-    "hidden_size":config["model_dim"],
-    "intermediate_size":4*config["model_dim"],
-    "num_hidden_layers":config["n_layer"],
-    "num_attention_heads":config["query_num"],
-    "num_key_value_heads":config["kv_num"],
-    "head_dim":head_dim,
-    "hidden_act":"relu",
-    "mlp_bias":False,
-    "attention_bias":False,
-    # rms_norm has no weight and no eps, activations are bf16 so torch uses finfo(bf16).eps
-    "rms_norm_eps":torch.finfo(torch.bfloat16).eps,
-    "max_position_embeddings":config["seq_len"],
-    "rope_theta":10000.0,
-    "rope_scaling":None,
-    "vocab_size":config["vocab_size"],
-    # lm_head has vocab_size rows but logits are cut to the tokenizer size
-    "output_vocab_size":len(vocab)+len(special),
-    "tie_word_embeddings":False,
-    "sliding_window":config["seq_len"]//4 if "S" in pattern else None,
-    "layer_types":layer_types,
-    "bos_token_id":None,
-    "eos_token_id":special[eos],
-    "pad_token_id":special[eos],
-    "dtype":"bfloat16",
-    "torch_dtype":"bfloat16",
-    "nanogpt_config":config,
-}
+# the architecture itself must be registered to vLLM: inference.vllm_model.NanoGPTForCausalLM
+from inference.vllm_config import hf_config as build_hf_config
+hf_config=build_hf_config(config,len(vocab)+len(special),special[eos])
 with open(os.path.join(out_dir,"config.json"),"w") as f:
     json.dump(hf_config,f,indent=2)
 with open(os.path.join(out_dir,"generation_config.json"),"w") as f:

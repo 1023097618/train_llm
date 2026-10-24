@@ -152,8 +152,9 @@ for step in range(num_steps):
         if advantages.abs().sum() == 0:
             continue  # all samples equally good or bad: no learning signal for this question
         trained_questions += 1
-        seqs = [prompt + t for t, _ in samples]
-        masks = [[0] * len(prompt) + m for _, m in samples]
+        # the forward pass takes seq[:-1], so a sequence may hold at most seq_len + 1 tokens
+        seqs = [(prompt + t)[:config.seq_len + 1] for t, _ in samples]
+        masks = [([0] * len(prompt) + m)[:config.seq_len + 1] for _, m in samples]
         longest = max(len(s) for s in seqs)
         ids = torch.tensor([s + [end_assistant] * (longest - len(s)) for s in seqs], device=device)
         mask = torch.tensor([m + [0] * (longest - len(m)) for m in masks], device=device)

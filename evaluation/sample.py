@@ -45,10 +45,20 @@ def calculate(expression: str):
     Args:
         expression: math expression, e.g. (3 + 5) * 2
     """
-    try:
-        return {"expression": expression, "result": eval(expression, {"__builtins__": {}})}
-    except Exception as e:
-        return {"error": str(e), "expression": expression}
+    # same safety rules as nanochat's calculator: plain arithmetic only, no power operator, time limit,
+    # so a sampled "9**9**9" can neither hang the process nor return a number with thousands of digits
+    from inference.engine import eval_with_timeout
+    expr = str(expression).strip()
+    if not expr or any(ch not in "0123456789+-*/.() " for ch in expr):
+        return {"error": "only numbers and + - * / ( ) are allowed", "expression": expression}
+    if "**" in expr:
+        return {"error": "the power operator is not allowed", "expression": expression}
+    result = eval_with_timeout(expr, max_time=3)
+    if result is None:
+        return {"error": "could not evaluate the expression", "expression": expression}
+    if len(str(result)) > 40:
+        return {"error": "the result is too large", "expression": expression}
+    return {"expression": expression, "result": result}
 
 
 @tool

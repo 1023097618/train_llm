@@ -71,7 +71,7 @@ class VLLMEngine:
         self.llm.reset_prefix_cache()
 
     def generate(self, prompts, num_samples=1, max_tokens=256, temperature=1.0, top_k=50, tools=None,
-                 stop_token_ids=None, max_rounds=8, seed=None):
+                 stop_token_ids=None, max_rounds=8, seed=None, max_tool_tokens=256):
         """
         prompts: list of token id lists (rendered with last_is_user=True, ending with <|assistant|>)
         tools: {name: fn} called on <|/tool call|>, or None to disable tool execution
@@ -130,8 +130,11 @@ class VLLMEngine:
                         start = max((k for k, t in enumerate(r[2]) if t == self.start_tool_call), default=None)
                         call = self.tokeniz.decode(r[2][start + 1:-1]) if start is not None else ""
                         result = execute_tool_call(call, tools, warn=False)
-                        forced = ([self.end_assistant, self.start_tool_output] + self.tokeniz.encode_ordinary(result)
+                        forced = ([self.end_assistant, self.start_tool_output] + self.tokeniz.encode_ordinary(result)[:max_tool_tokens]
                                   + [self.end_tool_output, self.start_assistant])
+                        # never let forced tokens push the sequence past the model context
+                        room = self.max_model_len - len(r[1]) - len(r[2])
+                        forced = forced[:max(room, 0)]
                         r[2].extend(forced)
                         r[3].extend([0] * len(forced))
                         if len(r[1]) + len(r[2]) >= self.max_model_len:

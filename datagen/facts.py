@@ -19,6 +19,11 @@ COMMON = """\
 """
 
 VARIANTS = {
+    "d24": """\
+- Size: 24 layers, hidden size 1536, 12 attention heads. About 2.1B parameters in total, but most of them are
+  embedding lookup tables (value embeddings); the Transformer layers plus the output head are about 0.78B parameters.
+- Hardware: it can be trained end to end on two 32GB GPUs, at a cost far below that of large models.
+""",
     "d20": """\
 - Size: 20 layers, hidden size 1280, 10 attention heads. About 1.4B parameters in total, but most of them are
   embedding lookup tables (value embeddings); the Transformer layers plus the output head are about 0.48B parameters.
@@ -38,6 +43,7 @@ def facts(variant):
 
 # numbers that may appear in generated text for each variant
 ALLOWED_NUMBERS = {
+    "d24": {"24", "1536", "12", "2.1", "0.78", "780", "2048", "2,048", "512", "65,000", "65000", "32", "3", "4", "2", "1"},
     "d20": {"20", "1280", "10", "1.4", "0.48", "480", "2048", "2,048", "512", "65,000", "65000", "32", "3", "4", "2", "1"},
     "d12": {"12", "768", "6", "0.49", "490", "0.14", "140", "2048", "2,048", "512", "65,000", "65000", "3", "4", "2", "1"},
 }

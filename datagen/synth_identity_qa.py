@@ -49,7 +49,7 @@ NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--variant", choices=["d12", "d20"], required=True)
+    parser.add_argument("--variant", choices=["d12", "d20", "d24"], required=True)
     parser.add_argument("--num_calls", type=int, default=50, help="10 conversations per call")
     parser.add_argument("--dst", required=True)
     parser.add_argument("--cache", default=None)

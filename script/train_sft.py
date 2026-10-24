@@ -303,7 +303,7 @@ def get_momentum(step):
 def save_model(step,train_loader_state_dict,bpb=None):
     """step 是已经完成的最后一个 optimizer step，resume 时从 step+1 继续（和 pretrain 一致）。"""
     global best_bpb
-    optimizer_state=optimiz.state_dict()
+    optimizer_state=common.to_cpu(optimiz.state_dict())
     if ddp:
         train_loader_states=[None for _ in range(world_size)] if is_main else None
         optimizer_states=[None for _ in range(world_size)] if is_main else None

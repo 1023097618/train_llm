@@ -15,6 +15,8 @@ from datagen.facts import facts, ALLOWED_NUMBERS
 SELECT = re.compile(r"param|layer|hidden|head|ReLU|activation|architecture|pre-?train|SFT|fine-tun|train(?:ed|ing)|"
                     r"\bGPU\b|32 ?GB|cost|RL\b|reinforcement|DPO|context|token|optimi[sz]er|Muon|embedding", re.I)
 OLD_FACTS = {
+    # the d24 file is made from the d20 one: its specs and the single GPU are outdated
+    "d24": r"0\.56|561|560 ?million|0\.1 ?B\b|0\.1 billion|100 ?million|1\.4 ?(?:B|billion)|0\.48|\b20[- ]layers?\b|\b1280\b|\b10 attention heads|single 32 ?GB|(?<!squared )\bReLU\b(?!²| ?squared|-squared|\^2)",
     "d20": r"0\.56|561|560 ?million|0\.1 ?B\b|0\.1 billion|100 ?million|(?<!squared )\bReLU\b(?!²| ?squared|-squared|\^2)|\b12[- ]layers?\b",
     "d12": r"0\.56|561|560 ?million|0\.1 ?B\b|0\.1 billion|100 ?million|(?<!squared )\bReLU\b(?!²| ?squared|-squared|\^2)|\b20[- ]layers?\b|\b1280\b|32 ?GB",
 }
@@ -38,7 +40,7 @@ Return JSON: {{"messages": [{{"role": ..., "content": ...}}, ...]}}"""
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--variant", choices=["d12", "d20"], required=True)
+    parser.add_argument("--variant", choices=["d12", "d20", "d24"], required=True)
     parser.add_argument("--src", required=True)
     parser.add_argument("--dst", required=True)
     parser.add_argument("--cache", default=None)

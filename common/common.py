@@ -20,6 +20,17 @@ def get_pbar():
         disable=not sys.stderr.isatty(),
     )
 
+def to_cpu(obj):
+    """recursively move tensors to cpu, e.g. an optimizer state before dist.gather_object
+    (otherwise rank0 unpickles every rank's GPU tensors onto its own GPU)"""
+    if torch.is_tensor(obj):
+        return obj.detach().cpu()
+    if isinstance(obj,dict):
+        return {k:to_cpu(v) for k,v in obj.items()}
+    if isinstance(obj,(list,tuple)):
+        return type(obj)(to_cpu(v) for v in obj)
+    return obj
+
 def strip_prefix(sd,prefix='_orig_mod.'):
     return { (k[len(prefix):] if k.startswith(prefix) else k):v for k,v in sd.items() }
 

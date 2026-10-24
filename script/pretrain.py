@@ -341,7 +341,7 @@ for step1 in range(start_step,num_iteration+1):
     if ddp:
         dist.all_reduce(total_loss,op=dist.ReduceOp.AVG)
     if step1%args.save_every==0:
-        optimizer_state=optimiz.state_dict()
+        optimizer_state=common.to_cpu(optimiz.state_dict())
         if ddp:
             data_loader_states = [None for _ in range(world_size)] if is_main else None
             optimizer_states = [None for _ in range(world_size)] if is_main else None
@@ -368,7 +368,7 @@ for step1 in range(start_step,num_iteration+1):
         if pbar.disable and (step1%10==0 or step1==start_step):
             # progress bar is off when logging to a file
             print(f"step {step1}/{num_iteration}: time use:{usedtime:.2f} loss:{total_loss.item():.4f} mfu:{optimal_time/usedtime:.3f} lr_ratio:{lr_ratio:.3f}",flush=True)
-optimizer_state=optimiz.state_dict()
+optimizer_state=common.to_cpu(optimiz.state_dict())
 if ddp:
     data_loader_states = [None for _ in range(world_size)] if is_main else None
     optimizer_states = [None for _ in range(world_size)] if is_main else None

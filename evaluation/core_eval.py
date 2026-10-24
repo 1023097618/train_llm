@@ -15,6 +15,7 @@ import time
 import torch
 import torch.distributed as dist
 from jinja2 import Template
+from torch.utils.data import Dataset, DataLoader
 
 from common.data_paths import EVAL_BUNDLE
 
@@ -132,7 +133,8 @@ def score_sequences(model, sequences, pad_token_id, device, batch_tokens):
     """
     sequences: list of (tokens, start, end)
     returns per sequence (mean loss of tokens[start:end], whether greedy argmax reproduces tokens[start:end])
-    sequences are sorted by length and packed into right padded batches of <= batch_tokens tokens
+    sequences are sorted by length and packed into right padded batches of <= batch_tokens tokens;
+    the per sequence reductions run on the GPU, so there is one host sync per batch
     """
     order = sorted(range(len(sequences)), key=lambda i: -len(sequences[i][0]))
     results = [None] * len(sequences)
@@ -142,32 +144,60 @@ def score_sequences(model, sequences, pad_token_id, device, batch_tokens):
         n = max(1, batch_tokens // longest)
         batch = order[i:i + n]
         i += n
-        input_ids = stack_sequences([sequences[j][0] for j in batch], pad_token_id).to(device)
+        input_ids = stack_sequences([sequences[j][0] for j in batch], pad_token_id).pin_memory().to(device, non_blocking=True)
+        bounds = torch.tensor([[sequences[j][1] - 1, sequences[j][2] - 1] for j in batch]).pin_memory().to(device, non_blocking=True)
         logits = model(input_ids).logit
         B, T = input_ids.shape
         target_ids = torch.roll(input_ids, shifts=-1, dims=1)
         losses = torch.nn.functional.cross_entropy(logits.reshape(B * T, -1), target_ids.reshape(B * T), reduction='none').view(B, T)
         correct = logits.argmax(dim=-1) == target_ids
         del logits
-        for row, j in enumerate(batch):
-            _, s, e = sequences[j]
-            results[j] = (losses[row, s - 1:e - 1].mean().item(), bool(correct[row, s - 1:e - 1].all().item()))
+        pos = torch.arange(T, device=device)[None, :]
+        answer = (pos >= bounds[:, :1]) & (pos < bounds[:, 1:])  # predictions of tokens[start:end]
+        mean_loss = (losses * answer).sum(1) / answer.sum(1)
+        all_correct = (correct | ~answer).all(1)
+        for j, loss, ok in zip(batch, mean_loss.tolist(), all_correct.tolist()):
+            results[j] = (loss, ok)
     return results
 
 
-def evaluate_task(model, tokeniz, data, device, task_meta, max_seq_len, batch_tokens=8192):
+class CoreChunks(Dataset):
+    """
+    all CORE tasks cut into chunks of examples; __getitem__ renders + tokenizes one chunk,
+    so a DataLoader prepares the next tasks in its worker processes while the GPU scores the current one
+    """
+    def __init__(self, loaded, tokeniz, max_seq_len, chunk_size=64):
+        self.loaded, self.tokeniz, self.max_seq_len = loaded, tokeniz, max_seq_len
+        self.chunks = []  # (task index, example indices)
+        for k, (data, _) in enumerate(loaded):
+            indices = task_indices(data)
+            self.chunks += [(k, indices[c:c + chunk_size]) for c in range(0, len(indices), chunk_size)]
+
+    def __len__(self):
+        return len(self.chunks)
+
+    def __getitem__(self, i):
+        k, indices = self.chunks[i]
+        data, task_meta = self.loaded[k]
+        prepared = []
+        for idx in indices:
+            tokens, starts, ends = prepare_example(idx, self.tokeniz, data, task_meta, self.max_seq_len)
+            prepared.extend((idx, t, s, e) for t, s, e in zip(tokens, starts, ends))
+        return k, prepared
+
+
+def task_indices(data):
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
-    indices = list(range(rank, len(data), world_size))
-    sequences, owners = [], []
-    for idx in indices:
-        tokens, starts, ends = prepare_example(idx, tokeniz, data, task_meta, max_seq_len)
-        for t, s, e in zip(tokens, starts, ends):
-            sequences.append((t, s, e))
-            owners.append(idx)
-    scores = score_sequences(model, sequences, tokeniz.special_token['<|doc|>'], device, batch_tokens)
+    return list(range(rank, len(data), world_size))
+
+
+def evaluate_prepared(model, tokeniz, data, device, task_meta, prepared, batch_tokens):
+    """prepared: list of (example idx, tokens, start, end) of this rank"""
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    scores = score_sequences(model, [(t, s, e) for _, t, s, e in prepared], tokeniz.special_token['<|doc|>'], device, batch_tokens)
     per_example = {}
-    for idx, score in zip(owners, scores):
+    for (idx, *_), score in zip(prepared, scores):
         per_example.setdefault(idx, []).append(score)
     correct = torch.zeros(len(data), dtype=torch.float32, device=device)
     for idx, sc in per_example.items():
@@ -182,8 +212,20 @@ def evaluate_task(model, tokeniz, data, device, task_meta, max_seq_len, batch_to
     return correct.mean().item()
 
 
-def evaluate_core(model, tokeniz, device, max_per_task=-1, bundle_dir=EVAL_BUNDLE, log=print, batch_tokens=8192):
-    """returns {"results": {task: acc}, "centered_results": {task: centered}, "core_metric": float}"""
+def evaluate_task(model, tokeniz, data, device, task_meta, max_seq_len, batch_tokens=8192):
+    prepared = []
+    for idx in task_indices(data):
+        tokens, starts, ends = prepare_example(idx, tokeniz, data, task_meta, max_seq_len)
+        prepared.extend((idx, t, s, e) for t, s, e in zip(tokens, starts, ends))
+    return evaluate_prepared(model, tokeniz, data, device, task_meta, prepared, batch_tokens)
+
+
+def evaluate_core(model, tokeniz, device, max_per_task=-1, bundle_dir=EVAL_BUNDLE, log=print, batch_tokens=8192,
+                  num_workers=8, prefetch_factor=16):
+    """
+    returns {"results": {task: acc}, "centered_results": {task: centered}, "core_metric": float}
+    a DataLoader renders/tokenizes the tasks in num_workers processes ahead of the GPU scoring
+    """
     import yaml
     if not os.path.exists(os.path.join(bundle_dir, "core.yaml")):
         raise FileNotFoundError(f"{bundle_dir}/core.yaml not found, run `python -m script.download_eval` first")
@@ -191,13 +233,8 @@ def evaluate_core(model, tokeniz, device, max_per_task=-1, bundle_dir=EVAL_BUNDL
         tasks = yaml.safe_load(f)['icl_tasks']
     with open(os.path.join(bundle_dir, "eval_meta_data.csv"), encoding='utf-8') as f:
         random_baselines = {row['Eval Task']: float(row['Random baseline']) for row in csv.DictReader(f)}
-    max_seq_len = model.config.seq_len
-    results, centered_results = {}, {}
-    was_training = model.training
-    model.eval()
+    loaded = []
     for task in tasks:
-        t0 = time.time()
-        label = task['label']
         task_meta = {
             'task_type': task['icl_task_type'],
             'num_fewshot': task['num_fewshot'][0],
@@ -208,12 +245,31 @@ def evaluate_core(model, tokeniz, device, max_per_task=-1, bundle_dir=EVAL_BUNDL
         random.Random(1337).shuffle(data)  # consistent subsampling with max_per_task
         if max_per_task > 0:
             data = data[:max_per_task]
-        accuracy = evaluate_task(model, tokeniz, data, device, task_meta, max_seq_len, batch_tokens)
+        loaded.append((data, task_meta))
+    dataset = CoreChunks(loaded, tokeniz, model.config.seq_len)
+    chunks_per_task = [sum(1 for k, _ in dataset.chunks if k == t) for t in range(len(tasks))]
+    loader = DataLoader(dataset, batch_size=None, num_workers=num_workers,
+                        prefetch_factor=prefetch_factor if num_workers > 0 else None)
+    results, centered_results = {}, {}
+    was_training = model.training
+    model.eval()
+    it = iter(loader)
+    for k, task in enumerate(tasks):
+        t0 = time.time()
+        prepared = []
+        for _ in range(chunks_per_task[k]):
+            chunk_task, items = next(it)
+            assert chunk_task == k
+            prepared += items
+        t_wait = time.time() - t0
+        data, task_meta = loaded[k]
+        accuracy = evaluate_prepared(model, tokeniz, data, device, task_meta, prepared, batch_tokens)
+        label = task['label']
         baseline = 0.01 * random_baselines[label]
         results[label] = accuracy
         centered_results[label] = (accuracy - baseline) / (1.0 - baseline)
         log(f"{label:<32} ({task_meta['num_fewshot']}-shot {task_meta['task_type']}): "
-            f"accuracy {accuracy:.4f} | centered {centered_results[label]:.4f} | {time.time() - t0:.1f}s")
+            f"accuracy {accuracy:.4f} | centered {centered_results[label]:.4f} | {time.time() - t0:.1f}s (waited {t_wait:.1f}s for data)")
     model.train(was_training)
     core_metric = sum(centered_results.values()) / len(centered_results)
     return {"results": results, "centered_results": centered_results, "core_metric": core_metric}

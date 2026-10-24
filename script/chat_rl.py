@@ -38,7 +38,9 @@ parser.add_argument("--max_steps", type=int, default=0, help="stop early when > 
 parser.add_argument("--device_batch_size", type=int, default=8, help="max sequences per forward pass")
 parser.add_argument("--examples_per_step", type=int, default=16, help="questions per optimization step")
 parser.add_argument("--num_samples", type=int, default=16, help="samples per question")
-parser.add_argument("--max_new_tokens", type=int, default=256)
+# our JSON tool calls are much longer than nanochat's inline <<expr=result>>: with 256 tokens half of the SFT model's
+# GSM8K rollouts were cut off, and RL collapsed by learning to answer shorter instead of better
+parser.add_argument("--max_new_tokens", type=int, default=512)
 parser.add_argument("--temperature", type=float, default=1.0)
 parser.add_argument("--top_k", type=int, default=50)
 parser.add_argument("--embedding_lr", type=float, default=0.2)
@@ -140,6 +142,7 @@ for step in range(num_steps):
     # ---- policy gradient ----
     model.train()
     mean_rewards, lengths = [], []
+    truncated = sum(t[-1] != end_assistant for samples in outputs for t, _ in samples if t) / sum(len(s) for s in outputs)
     trained_questions = 0
     for conversation, prompt, samples in zip(conversations, prompts, outputs):
         rewards = torch.tensor([train_task.reward(conversation, completion_text(t)) for t, _ in samples], device=device)
@@ -171,7 +174,7 @@ for step in range(num_steps):
         optimiz.zero_grad(set_to_none=True)
         engine.update_weights(model)
     mean_reward = sum(mean_rewards) / len(mean_rewards)
-    log = {"train/reward": mean_reward, "train/trained_questions": trained_questions, "train/sequence_length": sum(lengths) / len(lengths), "train/lrm": lrm,
+    log = {"train/reward": mean_reward, "train/truncated": truncated, "train/trained_questions": trained_questions, "train/sequence_length": sum(lengths) / len(lengths), "train/lrm": lrm,
            "train/rollout_time": t_rollout, "train/step_time": time.time() - t0}
     if args.use_wandb:
         run.log(log, step=step)
@@ -179,7 +182,7 @@ for step in range(num_steps):
     pbar.refresh()
     pbar.set_postfix_str(f"step {step}: reward {mean_reward:.3f}, len {log['train/sequence_length']:.0f}, "
                          f"rollout {t_rollout:.1f}s, step {log['train/step_time']:.1f}s")
-    print(f"step {step}/{num_steps} | reward {mean_reward:.3f} | seq len {log['train/sequence_length']:.0f} | "
+    print(f"step {step}/{num_steps} | reward {mean_reward:.3f} | seq len {log['train/sequence_length']:.0f} | truncated {truncated:.2f} | "
           f"rollout {t_rollout:.1f}s | step {log['train/step_time']:.1f}s", flush=True)
     if (step > 0 and step % args.save_every == 0) and step != num_steps - 1:
         save(step, history)

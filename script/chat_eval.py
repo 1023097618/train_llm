@@ -8,6 +8,8 @@ usage:
 python -m script.chat_eval --ckpt_path=weight/d20/sft_model.ckpt --tokenizer_path=weight/d20/tokenizer.pkl --stage=sft
 quick check: --max_problems=200
 """
+import sys
+sys.stdout.reconfigure(line_buffering=True)  # show progress in nohup logs immediately
 import argparse
 import gc
 import time

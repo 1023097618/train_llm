@@ -19,6 +19,16 @@ from jinja2 import Template
 from common.data_paths import EVAL_BUNDLE
 
 
+_TEMPLATES = {}
+
+
+def _template(template_str):
+    # compiling a jinja template is much slower than rendering it, do it once per template
+    if template_str not in _TEMPLATES:
+        _TEMPLATES[template_str] = Template(template_str)
+    return _TEMPLATES[template_str]
+
+
 def render_prompts_mc(item, continuation_delimiter, fewshot_examples=None):
     template_str = """
 {%- for example in fewshot_examples -%}
@@ -26,7 +36,7 @@ def render_prompts_mc(item, continuation_delimiter, fewshot_examples=None):
 
 {% endfor -%}
 {{ item.query }}{{ continuation_delimiter }}{{ choice }}""".strip()
-    template = Template(template_str)
+    template = _template(template_str)
     context = {'fewshot_examples': fewshot_examples or [], 'continuation_delimiter': continuation_delimiter, 'item': item}
     return [template.render(choice=choice, **context) for choice in item['choices']]
 
@@ -38,7 +48,7 @@ def render_prompts_schema(item, continuation_delimiter, fewshot_examples=None):
 
 {% endfor -%}
 {{ context }}{{ continuation_delimiter }}{{ item.continuation }}""".strip()
-    template = Template(template_str)
+    template = _template(template_str)
     context = {'fewshot_examples': fewshot_examples or [], 'continuation_delimiter': continuation_delimiter, 'item': item}
     return [template.render(context=context_option, **context) for context_option in item['context_options']]
 
@@ -50,7 +60,7 @@ def render_prompts_lm(item, continuation_delimiter, fewshot_examples=None):
 
 {% endfor -%}
 {{ item.context | trim }}{{ continuation_delimiter }}{% if include_continuation %}{{ item.continuation }}{% endif %}""".strip()
-    template = Template(template_str)
+    template = _template(template_str)
     context = {'fewshot_examples': fewshot_examples or [], 'continuation_delimiter': continuation_delimiter, 'item': item}
     # strip so the prompt without continuation is a clean token prefix of the one with it
     prompt_without = template.render(include_continuation=False, **context).strip()
@@ -96,19 +106,8 @@ def batch_sequences(tokeniz, prompts, task_type):
     return [tokens_with], [start], [end]
 
 
-@torch.no_grad()
-def forward_model(model, input_ids):
-    """BxT token ids -> BxT losses (last column nan) and argmax predictions"""
-    B, T = input_ids.shape
-    logits = model(input_ids).logit
-    target_ids = torch.roll(input_ids, shifts=-1, dims=1)
-    losses = torch.nn.functional.cross_entropy(logits.reshape(B * T, -1).float(), target_ids.reshape(B * T), reduction='none').view(B, T)
-    losses[:, -1] = float('nan')
-    return losses, logits.argmax(dim=-1)
-
-
-@torch.no_grad()
-def evaluate_example(idx, model, tokeniz, data, device, task_meta, max_seq_len):
+def prepare_example(idx, tokeniz, data, task_meta, max_seq_len):
+    """render + tokenize one example -> (sequences, answer starts, answer ends)"""
     item = data[idx]
     task_type = task_meta['task_type']
     num_fewshot = task_meta['num_fewshot']
@@ -120,35 +119,70 @@ def evaluate_example(idx, model, tokeniz, data, device, task_meta, max_seq_len):
     prompts = render(item, task_meta['continuation_delimiter'], fewshot_examples)
     tokens, start_idxs, end_idxs = batch_sequences(tokeniz, prompts, task_type)
     # crop from the left to the model context, shifting the answer indices
-    cropped = []
     for i, t in enumerate(tokens):
         if len(t) > max_seq_len:
             crop = len(t) - max_seq_len
-            t, start_idxs[i], end_idxs[i] = t[-max_seq_len:], start_idxs[i] - crop, end_idxs[i] - crop
+            tokens[i], start_idxs[i], end_idxs[i] = t[-max_seq_len:], start_idxs[i] - crop, end_idxs[i] - crop
             assert start_idxs[i] >= 1
-        cropped.append(t)
-    input_ids = stack_sequences(cropped, tokeniz.special_token['<|doc|>']).to(device)
-    losses, predictions = forward_model(model, input_ids)
-    if task_type == 'language_modeling':
-        si, ei = start_idxs[0], end_idxs[0]
-        return torch.all(predictions[0, si - 1:ei - 1] == input_ids[0, si:ei]).item()
-    mean_losses = [losses[i, si - 1:ei - 1].mean().item() for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))]
-    return mean_losses.index(min(mean_losses)) == item['gold']
+    return tokens, start_idxs, end_idxs
 
 
-def evaluate_task(model, tokeniz, data, device, task_meta, max_seq_len):
+@torch.no_grad()
+def score_sequences(model, sequences, pad_token_id, device, batch_tokens):
+    """
+    sequences: list of (tokens, start, end)
+    returns per sequence (mean loss of tokens[start:end], whether greedy argmax reproduces tokens[start:end])
+    sequences are sorted by length and packed into right padded batches of <= batch_tokens tokens
+    """
+    order = sorted(range(len(sequences)), key=lambda i: -len(sequences[i][0]))
+    results = [None] * len(sequences)
+    i = 0
+    while i < len(order):
+        longest = len(sequences[order[i]][0])
+        n = max(1, batch_tokens // longest)
+        batch = order[i:i + n]
+        i += n
+        input_ids = stack_sequences([sequences[j][0] for j in batch], pad_token_id).to(device)
+        logits = model(input_ids).logit
+        B, T = input_ids.shape
+        target_ids = torch.roll(input_ids, shifts=-1, dims=1)
+        losses = torch.nn.functional.cross_entropy(logits.reshape(B * T, -1), target_ids.reshape(B * T), reduction='none').view(B, T)
+        correct = logits.argmax(dim=-1) == target_ids
+        del logits
+        for row, j in enumerate(batch):
+            _, s, e = sequences[j]
+            results[j] = (losses[row, s - 1:e - 1].mean().item(), bool(correct[row, s - 1:e - 1].all().item()))
+    return results
+
+
+def evaluate_task(model, tokeniz, data, device, task_meta, max_seq_len, batch_tokens=8192):
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
+    indices = list(range(rank, len(data), world_size))
+    sequences, owners = [], []
+    for idx in indices:
+        tokens, starts, ends = prepare_example(idx, tokeniz, data, task_meta, max_seq_len)
+        for t, s, e in zip(tokens, starts, ends):
+            sequences.append((t, s, e))
+            owners.append(idx)
+    scores = score_sequences(model, sequences, tokeniz.special_token['<|doc|>'], device, batch_tokens)
+    per_example = {}
+    for idx, score in zip(owners, scores):
+        per_example.setdefault(idx, []).append(score)
     correct = torch.zeros(len(data), dtype=torch.float32, device=device)
-    for idx in range(rank, len(data), world_size):
-        correct[idx] = float(evaluate_example(idx, model, tokeniz, data, device, task_meta, max_seq_len))
+    for idx, sc in per_example.items():
+        if task_meta['task_type'] == 'language_modeling':
+            correct[idx] = float(sc[0][1])
+        else:  # multiple_choice / schema: the option with the lowest mean loss
+            mean_losses = [loss for loss, _ in sc]
+            correct[idx] = float(mean_losses.index(min(mean_losses)) == data[idx]['gold'])
     if world_size > 1:
         dist.barrier()
         dist.all_reduce(correct, op=dist.ReduceOp.SUM)
     return correct.mean().item()
 
 
-def evaluate_core(model, tokeniz, device, max_per_task=-1, bundle_dir=EVAL_BUNDLE, log=print):
+def evaluate_core(model, tokeniz, device, max_per_task=-1, bundle_dir=EVAL_BUNDLE, log=print, batch_tokens=8192):
     """returns {"results": {task: acc}, "centered_results": {task: centered}, "core_metric": float}"""
     import yaml
     if not os.path.exists(os.path.join(bundle_dir, "core.yaml")):
@@ -174,7 +208,7 @@ def evaluate_core(model, tokeniz, device, max_per_task=-1, bundle_dir=EVAL_BUNDL
         random.Random(1337).shuffle(data)  # consistent subsampling with max_per_task
         if max_per_task > 0:
             data = data[:max_per_task]
-        accuracy = evaluate_task(model, tokeniz, data, device, task_meta, max_seq_len)
+        accuracy = evaluate_task(model, tokeniz, data, device, task_meta, max_seq_len, batch_tokens)
         baseline = 0.01 * random_baselines[label]
         results[label] = accuracy
         centered_results[label] = (accuracy - baseline) / (1.0 - baseline)

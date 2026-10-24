@@ -12,6 +12,8 @@ usage:
 python -m script.chat_rl --ckpt_path=weight/d20/sft_model.ckpt --tokenizer_path=weight/d20/tokenizer.pkl \
     --save_ckpt_path=weight/d20/rl_model.ckpt
 """
+import sys
+sys.stdout.reconfigure(line_buffering=True)  # show progress in nohup logs immediately
 import argparse
 import os
 import time

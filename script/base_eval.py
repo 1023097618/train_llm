@@ -9,6 +9,8 @@ python -m script.download_eval
 python -m script.base_eval --ckpt_path=weight/d20/pretrained_model.ckpt --tokenizer_path=weight/d20/tokenizer.pkl
 quick check: --max_per_task=100
 """
+import sys
+sys.stdout.reconfigure(line_buffering=True)  # show progress in nohup logs immediately
 import argparse
 
 import torch
@@ -28,6 +30,7 @@ parser.add_argument("--ckpt_path", type=str, default="weight/pretrained_model.ck
 parser.add_argument("--tokenizer_path", type=str, default="weight/tokenizer.pkl")
 parser.add_argument("--eval", type=str, default="core,bpb,sample", help="comma separated: core,bpb,sample")
 parser.add_argument("--max_per_task", type=int, default=-1, help="examples per CORE task (-1 = all)")
+parser.add_argument("--core_batch_tokens", type=int, default=8192, help="tokens per CORE forward pass (lower it on small GPUs)")
 parser.add_argument("--eval_token", type=int, default=8 * 2**20, help="tokens for the bpb evaluation")
 parser.add_argument("--device_batch_size", type=int, default=4)
 parser.add_argument("--data_dir", type=str, default=str(PRETRAIN_T2T))
@@ -79,7 +82,7 @@ if "bpb" in modes:
     report["val_bpb"] = bpb
 
 if "core" in modes:
-    core = evaluate_core(model, tokeniz, device, max_per_task=args.max_per_task)
+    core = evaluate_core(model, tokeniz, device, max_per_task=args.max_per_task, batch_tokens=args.core_batch_tokens)
     print(f"CORE metric: {core['core_metric']:.4f}")
     report["core"] = core
     report["max_per_task"] = args.max_per_task

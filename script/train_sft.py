@@ -9,6 +9,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 \
 Data mixture follows nanochat's chat_sft.py: SmolTalk + MMLU x3 + GSM8K x4,
 plus hermes function-calling data and our own identity conversations.
 """
+import sys
+sys.stdout.reconfigure(line_buffering=True)  # show progress in nohup logs immediately
 
 import argparse
 import math

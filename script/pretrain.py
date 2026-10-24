@@ -6,6 +6,8 @@ python -m script.pretrain --use_wandb=0
 or
 CUDA_VISIBLE_DEVICES=1,2,3,4 torchrun --standalone --nproc_per_node=4 -m script.pretrain --use_wandb=0
 """
+import sys
+sys.stdout.reconfigure(line_buffering=True)  # show progress in nohup logs immediately
 
 
 import torch

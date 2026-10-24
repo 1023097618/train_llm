@@ -19,6 +19,7 @@ from torch import nn
 from dataclasses import dataclass
 import torch
 from torch.nn import functional as F
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from common import common
 from common.common import Linear,rms_norm,Embedding
 
@@ -141,7 +142,7 @@ class CasualAttention(nn.Module):
         self.device=device
         self.enable_gqa=(config.query_num!=config.kv_num)
 
-    def forward(self,x:torch.Tensor,ve,cos_sin,kv_cache:KVCache=None,seg_mask:torch.Tensor=None):
+    def forward(self,x:torch.Tensor,ve,cos_sin,kv_cache:KVCache=None,seg_mask:torch.Tensor=None,block_masks=None):
         B,T,C=x.shape
         q_num=self.config.query_num
         kv_num=self.config.kv_num
@@ -161,7 +162,10 @@ class CasualAttention(nn.Module):
         if kv_cache:
             k,v=kv_cache.update(self.index,k,v)
 
-        if kv_cache is None and not self.is_sliding and seg_mask is None:
+        if block_masks is not None:
+            # compiled training: flex attention skips the masked blocks (sliding window / other documents)
+            y=flex_attention(q,k,v,block_mask=block_masks[self.window_size],enable_gqa=self.enable_gqa)
+        elif kv_cache is None and not self.is_sliding and seg_mask is None:
             # not use mask to avoid generate the full attention matrix
             y = F.scaled_dot_product_attention(q,k,v,enable_gqa=self.enable_gqa,is_causal=True)
         else:
@@ -204,8 +208,8 @@ class Block(nn.Module):
         self.attn=CasualAttention(config,index,device)
         self.mlp=MLP(config)
 
-    def forward(self,x:torch.Tensor,ve,cos_sin,kv_cache=None,seg_mask=None):
-        x=x+self.attn(rms_norm(x),ve,cos_sin,kv_cache=kv_cache,seg_mask=seg_mask)
+    def forward(self,x:torch.Tensor,ve,cos_sin,kv_cache=None,seg_mask=None,block_masks=None):
+        x=x+self.attn(rms_norm(x),ve,cos_sin,kv_cache=kv_cache,seg_mask=seg_mask,block_masks=block_masks)
         x=x+self.mlp(rms_norm(x))
         return x
 
@@ -277,7 +281,10 @@ class GPT(nn.Module):
             assert nowT<=kv_cache.k.shape[3],f"seq_len exceed kv_cache buufer,kv_cache buffer time size is {kv_cache.k.shape[3]}, while we need {nowT}"
         cos_sin=(self.cos,self.sin)
         seg_mask=None
-        if segment_ids is not None:
+        block_masks=None
+        if kv_cache is None and torch.compiler.is_compiling() and x.is_cuda:
+            block_masks=self.flex_block_masks(segment_ids,x.shape[0],T_curr)
+        elif segment_ids is not None:
             seg_mask=(segment_ids[:,:,None]==segment_ids[:,None,:]).unsqueeze(1)
         emb=rms_norm(self.transformer.wte(x))
         emb=self.smear(emb,kv_cache=kv_cache,segment_ids=segment_ids)
@@ -287,7 +294,7 @@ class GPT(nn.Module):
         for i,block in enumerate(self.transformer.blocks):
             emb=self.resid_lambdas[i]*emb+self.x0_lambdas[i]*x0
             ve=self.value_embeds[str(i)](x) if str(i) in self.value_embeds else None
-            emb=block(emb,ve,cos_sin,kv_cache=kv_cache,seg_mask=seg_mask)
+            emb=block(emb,ve,cos_sin,kv_cache=kv_cache,seg_mask=seg_mask,block_masks=block_masks)
             if i==backout_layer:
                 x_backout=emb
         emb=emb-self.backout_lambda.to(emb.dtype)*x_backout
@@ -301,6 +308,18 @@ class GPT(nn.Module):
             loss=F.cross_entropy(logit.view(-1,logit.shape[-1]),y.reshape(-1),reduction=reduction,ignore_index=-1)
             return GPTOutPut(logit=logit,loss=loss)
         return GPTOutPut(logit=logit)
+
+    def flex_block_masks(self,segment_ids,B,T):
+        """one block mask per window size: causal, within the window, within the same document"""
+        def make_mask_mod(window):
+            def mask_mod(b,h,q_idx,kv_idx):
+                keep=(q_idx>=kv_idx)&(q_idx-kv_idx<=window)
+                if segment_ids is not None:
+                    keep=keep&(segment_ids[b,q_idx]==segment_ids[b,kv_idx])
+                return keep
+            return mask_mod
+        return {window:create_block_mask(make_mask_mod(window),B if segment_ids is not None else None,None,T,T,device=self.cos.device)
+                for window in sorted({self.config.window_size(i) for i in range(self.config.n_layer)})}
 
     def get_kv_cache(self,B,seq_len=None):
         return KVCache(self.config, B,device=self.device,dtype=torch.bfloat16,seq_len=seq_len)

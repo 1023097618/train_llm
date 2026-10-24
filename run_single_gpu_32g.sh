@@ -19,13 +19,30 @@ WEIGHT_DIR=weight/d20
 TOKENIZER=$WEIGHT_DIR/tokenizer.pkl
 PRETRAIN_CKPT=$WEIGHT_DIR/pretrained_model.ckpt
 SFT_CKPT=$WEIGHT_DIR/sft_model.ckpt
+RL_CKPT=$WEIGHT_DIR/rl_model.ckpt
+REPORT=$WEIGHT_DIR/report
 mkdir -p "$WEIGHT_DIR" log
 
+# ---- data ----
 python -m script.download_pretrain --num_shards=180
+python -m script.download_sft
+python -m script.download_eval
+
+# ---- tokenizer ----
 python -m script.train_token --save_path=$TOKENIZER
 python -m script.eval_token --tokenizer_path=$TOKENIZER
-python -m script.pretrain --depth=20 --seq_len=2048 --device_batch_size=8 --tokenizer_path=$TOKENIZER --save_ckpt_path=$PRETRAIN_CKPT
 
-python -m script.download_sft
-python -m script.train_sft --seq_len=2048 --tokenizer_path=$TOKENIZER --pretrained_ckpt_path=$PRETRAIN_CKPT --save_ckpt_path=$SFT_CKPT \
-    --identity_path=data/raw/custom/identity_conversations_en_d20.jsonl
+# ---- pretrain, then CORE / bpb (like nanochat base_eval) ----
+python -m script.pretrain --depth=20 --device_batch_size=4 --tokenizer_path=$TOKENIZER --save_ckpt_path=$PRETRAIN_CKPT
+python -m script.base_eval --ckpt_path=$PRETRAIN_CKPT --tokenizer_path=$TOKENIZER --report_dir=$REPORT
+
+# ---- SFT, then chat eval (ARC / MMLU / GSM8K / HumanEval / ChatCORE) ----
+python -m script.train_sft --device_batch_size=4 --tokenizer_path=$TOKENIZER --pretrained_ckpt_path=$PRETRAIN_CKPT --save_ckpt_path=$SFT_CKPT \
+    --identity_path=data/raw/custom/identity_conversations_en_d20.jsonl --identity_qa_path=data/raw/custom/identity_qa_d20.jsonl
+python -m script.chat_eval --ckpt_path=$SFT_CKPT --tokenizer_path=$TOKENIZER --stage=sft --report_dir=$REPORT
+
+# ---- RL on GSM8K (pass@k at the start and the end), then chat eval again ----
+python -m script.chat_rl --ckpt_path=$SFT_CKPT --tokenizer_path=$TOKENIZER --save_ckpt_path=$RL_CKPT --report_dir=$REPORT
+python -m script.chat_eval --ckpt_path=$RL_CKPT --tokenizer_path=$TOKENIZER --stage=rl --report_dir=$REPORT
+
+python -m script.report --report_dir=$REPORT

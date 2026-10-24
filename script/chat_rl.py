@@ -138,6 +138,7 @@ for step in range(num_steps):
     # ---- policy gradient ----
     model.train()
     mean_rewards, lengths = [], []
+    trained_questions = 0
     for conversation, prompt, samples in zip(conversations, prompts, outputs):
         rewards = torch.tensor([train_task.reward(conversation, completion_text(t)) for t, _ in samples], device=device)
         advantages = rewards - rewards.mean()
@@ -145,6 +146,7 @@ for step in range(num_steps):
         lengths.extend(len(t) for t, _ in samples)
         if advantages.abs().sum() == 0:
             continue  # all samples equally good or bad: no learning signal for this question
+        trained_questions += 1
         seqs = [prompt + t for t, _ in samples]
         masks = [[0] * len(prompt) + m for _, m in samples]
         longest = max(len(s) for s in seqs)
@@ -162,11 +164,12 @@ for step in range(num_steps):
     lrm = 1.0 - step / num_steps
     for g in optimiz.param_groups:
         g["lr"] = g["init_lr"] * lrm
-    optimiz.step()
-    optimiz.zero_grad(set_to_none=True)
-    engine.update_weights(model)
+    if trained_questions > 0:
+        optimiz.step()
+        optimiz.zero_grad(set_to_none=True)
+        engine.update_weights(model)
     mean_reward = sum(mean_rewards) / len(mean_rewards)
-    log = {"train/reward": mean_reward, "train/sequence_length": sum(lengths) / len(lengths), "train/lrm": lrm,
+    log = {"train/reward": mean_reward, "train/trained_questions": trained_questions, "train/sequence_length": sum(lengths) / len(lengths), "train/lrm": lrm,
            "train/rollout_time": t_rollout, "train/step_time": time.time() - t0}
     if args.use_wandb:
         run.log(log, step=step)

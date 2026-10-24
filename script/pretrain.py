@@ -363,6 +363,9 @@ for step1 in range(start_step,num_iteration+1):
         pbar.n=(step1/num_iteration)*100
         pbar.refresh()
         pbar.set_postfix_str(f"step {step1}: time use:{usedtime:.2f} loss:{total_loss.item():.2f} mfu:{optimal_time/usedtime:.2f}")
+        if pbar.disable and (step1%10==0 or step1==start_step):
+            # progress bar is off when logging to a file
+            print(f"step {step1}/{num_iteration}: time use:{usedtime:.2f} loss:{total_loss.item():.4f} mfu:{optimal_time/usedtime:.3f} lr_ratio:{lr_ratio:.3f}",flush=True)
 optimizer_state=optimiz.state_dict()
 if ddp:
     data_loader_states = [None for _ in range(world_size)] if is_main else None

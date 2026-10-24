@@ -13,7 +13,7 @@ plus hermes function-calling data and our own identity conversations.
 import argparse
 import math
 import os
-from common.data_paths import SFT_IDENTITY
+from common.data_paths import SFT_IDENTITY, SFT_IDENTITY_QA, SFT_TOOLCALL_SYNTH
 parser=argparse.ArgumentParser()
 parser.add_argument("--device_batch_size", default=4, type=int, help="batch size per gradient step")
 parser.add_argument("--batch_token", default=2**19, type=int, help="how many token should have in one step")
@@ -26,9 +26,13 @@ parser.add_argument("--device_type", default="cuda", choices=("cuda", "cpu"), he
 parser.add_argument("--use_wandb", type=int, default=1, help="if use wandb to log(0 to disable wandb)")
 parser.add_argument("--mmlu_epochs", default=3, type=int, help="epochs of MMLU auxiliary_train in the mixture (teaches multiple choice)")
 parser.add_argument("--gsm8k_epochs", default=4, type=int, help="epochs of GSM8K train in the mixture (teaches math and calculator use)")
-parser.add_argument("--toolcall_epochs", default=2, type=int, help="epochs of hermes function-calling data in the mixture (teaches general tool use, 0 to disable)")
+parser.add_argument("--toolcall_epochs", default=4, type=int, help="epochs of hermes function-calling data in the mixture (teaches general tool use, 0 to disable)")
+parser.add_argument("--toolcall_synth_path", default=str(SFT_TOOLCALL_SYNTH), type=str, help="jsonl of synthetic tool calls (retry / ask / chain / irrelevant)")
+parser.add_argument("--toolcall_synth_epochs", default=4, type=int, help="epochs of the synthetic tool calls (0 to disable)")
 parser.add_argument("--identity_path", default=str(SFT_IDENTITY), type=str, help="jsonl of identity conversations")
 parser.add_argument("--identity_epochs", default=2, type=int, help="epochs of identity conversations in the mixture(0 to disable)")
+parser.add_argument("--identity_qa_path", default=str(SFT_IDENTITY_QA), type=str, help="jsonl of short direct identity Q&A")
+parser.add_argument("--identity_qa_epochs", default=2, type=int, help="epochs of the short identity Q&A (0 to disable)")
 parser.add_argument("--pretrained_ckpt_path", type=str, default="weight/pretrained_model.ckpt", help="path of pretrained model checkpoint")
 parser.add_argument("--save_ckpt_path", type=str, default="weight/sft_model.ckpt", help="path to save sft model checkpoint")
 parser.add_argument("--resume",default=-1,type=int,help="resume from --save_ckpt_path (-1 is disable resume)")
@@ -98,9 +102,13 @@ def build_train_mixture():
     if args.toolcall_epochs > 0:
         toolcall=sftdata.HermesFunctionCalling() # 7K rows of multi-turn function calling
         tasks+=[toolcall]*args.toolcall_epochs
+    if args.toolcall_synth_epochs > 0:
+        tasks+=[sftdata.CustomJSON(args.toolcall_synth_path)]*args.toolcall_synth_epochs
     if args.identity_epochs > 0:
         identity=sftdata.CustomJSON(args.identity_path)
         tasks+=[identity]*args.identity_epochs
+    if args.identity_qa_epochs > 0:
+        tasks+=[sftdata.CustomJSON(args.identity_qa_path)]*args.identity_qa_epochs
     return sftdata.TaskMixture(tasks)
 
 
@@ -126,7 +134,8 @@ train_mixture=build_train_mixture()
 if is_main:
     print(f"SFT train mixture: {len(train_mixture):,} rows "
           f"(MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, "
-          f"toolcall x{args.toolcall_epochs}, identity x{args.identity_epochs})")
+          f"toolcall x{args.toolcall_epochs}, toolcall_synth x{args.toolcall_synth_epochs}, "
+          f"identity x{args.identity_epochs}, identity_qa x{args.identity_qa_epochs})")
 train_data_set=sftdata.SFTDataset(
     train_mixture, tokeniz, args.device_batch_size, args.seq_len,
     rank=rank, world_size=world_size, resume_state_dict=train_resume_state,
@@ -378,6 +387,9 @@ for now_step in range(start_iter,total_steps):
         pbar.n=progress*100
         pbar.refresh()
         pbar.set_postfix_str(f"step {now_step}: time used {usedtime:.2f}, gpu usage {optimal_time/usedtime:.2f}, loss: {total_loss.item()}")
+        if pbar.disable and (now_step%10==0 or now_step==start_iter):
+            # progress bar is off when logging to a file
+            print(f"step {now_step}/{total_steps}: time used {usedtime:.2f}, gpu usage {optimal_time/usedtime:.3f}, loss {total_loss.item():.4f}, lr_ratio {lr_ratio:.3f}",flush=True)
 
 save_model(total_steps-1,loader_state)
 if args.use_wandb and is_main:

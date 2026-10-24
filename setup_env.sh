@@ -9,8 +9,10 @@
 set -e
 
 ENV_NAME=${ENV_NAME:-gpt}
-CUDA=${CUDA:-cu128}
-TORCH_VERSION=${TORCH_VERSION:-2.11.0}
+CUDA=${CUDA:-cu130}
+TORCH_VERSION=${TORCH_VERSION:-2.13.0}
+# vLLM is used for RL rollouts and chat evaluation; 0.31.0 requires torch 2.13
+VLLM_VERSION=${VLLM_VERSION:-0.31.0}
 # Modified rustbpe (i64 counts + min_freq), pinned to a commit on the fork
 # PR: https://github.com/karpathy/rustbpe/pull/8
 RUSTBPE_SRC=${RUSTBPE_SRC:-git+https://github.com/1023097618/rustbpe@27ce874ed07e5e53e9a805e5b0b5294b06f078fa}
@@ -38,6 +40,8 @@ conda activate "$ENV_NAME"
 # Install PyTorch (with CUDA)
 echo ">>> Installing torch==$TORCH_VERSION ($CUDA)"
 pip install "torch==$TORCH_VERSION" --index-url "https://download.pytorch.org/whl/$CUDA"
+echo ">>> Installing vllm==$VLLM_VERSION"
+pip install --resume-retries 20 "vllm==$VLLM_VERSION"
 
 # Install the modified rustbpe (built from source with maturin, needs a Rust toolchain)
 if ! command -v cargo >/dev/null 2>&1; then
@@ -56,7 +60,7 @@ python -m ipykernel install --user --name "$ENV_NAME" --display-name "Python ($E
 # Self-check
 echo ">>> Checking environment"
 python - <<'EOF'
-import torch, tiktoken, rustbpe, pyarrow, pandas, wandb, docstring_parser, huggingface_hub
+import torch, tiktoken, rustbpe, pyarrow, pandas, wandb, docstring_parser, huggingface_hub, vllm, jinja2, yaml
 print(f"torch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     for i in range(torch.cuda.device_count()):

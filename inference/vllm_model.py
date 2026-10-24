@@ -100,7 +100,9 @@ class Smear(nn.Module):
         self.smear_lambda = nn.Parameter(torch.zeros(1), requires_grad=False)
         self.attn = Attention(self.num_heads, self.head_dim, scale=1.0, num_kv_heads=self.num_heads,
                               cache_config=cache_config, quant_config=quant_config,
-                              per_layer_sliding_window=2, prefix=f"{prefix}.prev_token_attn")
+                              per_layer_sliding_window=2,
+                              # vLLM orders KV caches by the single integer in the layer name: put it after the blocks
+                              prefix=f"{prefix}.{config.num_hidden_layers}.prev_token_attn")
 
     def forward(self, positions, x):
         parity = 1.0 - 2.0 * (positions % 2).to(x.dtype)  # (-1)^p

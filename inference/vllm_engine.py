@@ -10,6 +10,8 @@ import json
 import os
 import tempfile
 os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+# FlashInfer's top-k/top-p sampler is JIT compiled and needs nvcc, the PyTorch sampler works everywhere
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 
 import torch
 
@@ -87,7 +89,7 @@ class VLLMEngine:
                 rollouts.append([i, list(p), [], [], False])
 
         def params(n, budget, sub_seed):
-            return SamplingParams(n=n, temperature=temperature, top_k=top_k if top_k else -1, max_tokens=budget,
+            return SamplingParams(n=n, temperature=temperature, top_k=top_k if top_k and temperature > 0 else -1, max_tokens=budget,
                                   stop_token_ids=stop, ignore_eos=True, detokenize=False,
                                   seed=None if seed is None else sub_seed)
 

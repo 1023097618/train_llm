@@ -19,13 +19,30 @@ WEIGHT_DIR=weight/d12
 TOKENIZER=$WEIGHT_DIR/tokenizer.pkl
 PRETRAIN_CKPT=$WEIGHT_DIR/pretrained_model.ckpt
 SFT_CKPT=$WEIGHT_DIR/sft_model.ckpt
+RL_CKPT=$WEIGHT_DIR/rl_model.ckpt
+REPORT=$WEIGHT_DIR/report
 mkdir -p "$WEIGHT_DIR" log
 
+# ---- data ----
 python -m script.download_pretrain
+python -m script.download_sft
+python -m script.download_eval
+
+# ---- tokenizer ----
 python -m script.train_token --save_path=$TOKENIZER
 python -m script.eval_token --tokenizer_path=$TOKENIZER
-python -m script.pretrain --tokenizer_path=$TOKENIZER --save_ckpt_path=$PRETRAIN_CKPT
 
-python -m script.download_sft
-python -m script.train_sft --tokenizer_path=$TOKENIZER --pretrained_ckpt_path=$PRETRAIN_CKPT --save_ckpt_path=$SFT_CKPT \
-    --identity_path=data/raw/custom/identity_conversations_en_d12.jsonl
+# ---- pretrain, then CORE / bpb (like nanochat base_eval) ----
+python -m script.pretrain --device_batch_size=1 --tokenizer_path=$TOKENIZER --save_ckpt_path=$PRETRAIN_CKPT
+python -m script.base_eval --ckpt_path=$PRETRAIN_CKPT --tokenizer_path=$TOKENIZER --report_dir=$REPORT
+
+# ---- SFT, then chat eval (ARC / MMLU / GSM8K / HumanEval / ChatCORE) ----
+python -m script.train_sft --device_batch_size=1 --tokenizer_path=$TOKENIZER --pretrained_ckpt_path=$PRETRAIN_CKPT --save_ckpt_path=$SFT_CKPT \
+    --identity_path=data/raw/custom/identity_conversations_en_d12.jsonl --identity_qa_path=data/raw/custom/identity_qa_d12.jsonl
+python -m script.chat_eval --ckpt_path=$SFT_CKPT --tokenizer_path=$TOKENIZER --stage=sft --report_dir=$REPORT --batch_size=2 --gpu_memory_utilization=0.5 --enforce_eager=1
+
+# ---- RL on GSM8K (pass@k at the start and the end), then chat eval again ----
+python -m script.chat_rl --ckpt_path=$SFT_CKPT --tokenizer_path=$TOKENIZER --save_ckpt_path=$RL_CKPT --report_dir=$REPORT --device_batch_size=2 --gpu_memory_utilization=0.25 --enforce_eager=1
+python -m script.chat_eval --ckpt_path=$RL_CKPT --tokenizer_path=$TOKENIZER --stage=rl --report_dir=$REPORT --batch_size=2 --gpu_memory_utilization=0.5 --enforce_eager=1
+
+python -m script.report --report_dir=$REPORT

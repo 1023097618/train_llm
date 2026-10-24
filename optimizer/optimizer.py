@@ -177,7 +177,7 @@ class MuonOptimizer(torch.optim.Optimizer):
         pad_grad=torch.empty(chunk_size*self.world_size,*shape,device=device,dtype=dtype)
         torch.stack([p.grad for p in params],dim=0,out=pad_grad[:len(params)])
         pad_grad[len(params):].zero_()
-        future=dist.reduce_scatter_tensor(chunk_grad,pad_grad,dist.ReduceOp.AVG,async_op=True).get_future()
+        future=dist.reduce_scatter_tensor(chunk_grad,pad_grad,dist.ReduceOp.AVG,async_op=True)
         return dict(future=future,chunk_grad=chunk_grad,chunk_size=chunk_size,pad_grad=pad_grad,is_sharded=True)
 
     def reduce_adamw(self,group):
@@ -195,7 +195,7 @@ class MuonOptimizer(torch.optim.Optimizer):
                 # no padding needed: reduce_scatter from the grad itself, all_gather back into the param in place
                 chunk_size=grad.shape[0]//self.world_size
                 chunk_grad=torch.empty(chunk_size,*grad.shape[1:],device=grad.device,dtype=grad.dtype)
-                future=dist.reduce_scatter_tensor(chunk_grad,grad,op=dist.ReduceOp.AVG,async_op=True).get_future()
+                future=dist.reduce_scatter_tensor(chunk_grad,grad,op=dist.ReduceOp.AVG,async_op=True)
                 reduce_info[p]=dict(future=future,chunk_grad=chunk_grad,chunk_size=chunk_size,pad_grad=None,is_sharded=True)
             else:
                 device,dtype,shape=grad.device,grad.dtype,grad[0].shape
@@ -203,7 +203,7 @@ class MuonOptimizer(torch.optim.Optimizer):
                 chunk_grad=torch.empty(chunk_size,*shape,device=device,dtype=dtype)
                 pad_grad=torch.zeros(chunk_size*self.world_size,*shape,device=device,dtype=dtype)
                 pad_grad[:len(grad)].copy_(grad)
-                future=dist.reduce_scatter_tensor(chunk_grad,pad_grad,op=dist.ReduceOp.AVG,async_op=True).get_future()
+                future=dist.reduce_scatter_tensor(chunk_grad,pad_grad,op=dist.ReduceOp.AVG,async_op=True)
                 reduce_info[p]=dict(future=future,chunk_grad=chunk_grad,chunk_size=chunk_size,pad_grad=pad_grad,is_sharded=True)
         return reduce_info
                 
@@ -216,7 +216,7 @@ class MuonOptimizer(torch.optim.Optimizer):
         # grad=torch.stack([p.grad for p in params],dim=0)
         future=info['future']
         params_shape,device,dtype=params[0].shape,params[0].device,params[0].dtype
-        if future:
+        if future is not None:
             future.wait()
         if info['is_sharded']:
             grad=info['chunk_grad']
@@ -255,14 +255,14 @@ class MuonOptimizer(torch.optim.Optimizer):
             )
         else:
             stacked_param=torch.zeros(0,*params_shape,device=device,dtype=dtype)
-        if future:
+        if future is not None:
             if len(stacked_param)==chunk_size:
                 chunk_params=stacked_param
             else:
                 chunk_params=torch.zeros(chunk_size,*grad[0].shape,device=device,dtype=dtype)
                 chunk_params[:len(stacked_param)].copy_(stacked_param)
             copy_params=info['pad_grad']
-            future=dist.all_gather_into_tensor(copy_params,chunk_params,async_op=True).get_future()
+            future=dist.all_gather_into_tensor(copy_params,chunk_params,async_op=True)
             gather_list.append(dict(future=future,copy_params=copy_params,paste_params=params,kind='muon'))
         else:
             torch._foreach_copy_(params,stacked_param.unbind(0))
@@ -272,7 +272,7 @@ class MuonOptimizer(torch.optim.Optimizer):
         for p in group['params']:
             pinfo=info[p]
             future=pinfo['future']
-            if future:
+            if future is not None:
                 future.wait()
             if pinfo['is_sharded']:
                 chunk_grad=pinfo['chunk_grad']
@@ -308,13 +308,13 @@ class MuonOptimizer(torch.optim.Optimizer):
                 self.adamw_eps
             )
             state['step']+=1
-            if future and pinfo['pad_grad'] is None:
+            if future is not None and pinfo['pad_grad'] is None:
                 # owned_params is this rank's slice of p: in place all_gather
-                future=dist.all_gather_into_tensor(p,owned_params,async_op=True).get_future()
+                future=dist.all_gather_into_tensor(p,owned_params,async_op=True)
                 gather_list.append(dict(future=future,copy_params=None,paste_params=None,kind='adamw'))
-            elif future:
+            elif future is not None:
                 chunk_params=torch.zeros(*shape,device=device,dtype=dtype)
                 chunk_params[:len(owned_params)].copy_(owned_params)
                 copy_params=pinfo['pad_grad']
-                future=dist.all_gather_into_tensor(copy_params,chunk_params,async_op=True).get_future()
+                future=dist.all_gather_into_tensor(copy_params,chunk_params,async_op=True)
                 gather_list.append(dict(future=future,copy_params=copy_params,paste_params=p,kind='adamw'))

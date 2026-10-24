@@ -38,14 +38,14 @@ def fused_adamw(
 
 
 # https://arxiv.org/pdf/2505.16932
-# see get_coefficient.ipynb
+# Polar Express coefficients (num_iters=5, safety_factor=2e-2, cushion=2), same as nanochat
 coeffs_list=[
-    [8.077364675154751, -23.164514872804553, 17.02082042895468], 
- [4.004175387920777, -2.8941542019134276, 0.5359620057631334], 
- [3.8575603752860568, -2.8573722859634496, 0.5422813720930638], 
- [3.273090811768049, -2.454155567360048, 0.4995156193426476], 
- [2.3739476001512374, -1.733927991006291, 0.42586024687456364]
- ]
+    (8.156554524902461, -22.48329292557795, 15.878769915207462),
+    (4.042929935166739, -2.808917465908714, 0.5000178451051316),
+    (3.8916678022926607, -2.772484153217685, 0.5060648178503393),
+    (3.285753657755655, -2.3681294933425376, 0.46449024233003106),
+    (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
+]
 
 
 
@@ -62,32 +62,43 @@ def fused_muon(
         eps:torch.Tensor,
         red_dim:int
 ):
+    # nesterov momentum
     momentum_buffer1.lerp_(stacked_grad,1-momentum1)
     g=momentum_buffer1.lerp(stacked_grad,1-momentum1)
-    g=g/(g.norm(dim=(-1,-2),keepdim=True)*1.01+eps)
     X=g.bfloat16()
-    if g.shape[2]>g.shape[1]:
-        for a,b,c in coeffs_list:
-            A=X@X.mT
-            B=b*A+c*A@A
-            X=a*X +B@X
-    else:
+    # MuonEq row equilibration: rescale each row to the mean row norm before orthogonalization
+    # https://arxiv.org/abs/2603.28254
+    target=X.float().norm(dim=(-2,-1),keepdim=True)/(X.size(-2)**0.5)
+    row_norm=X.float().norm(dim=-1,keepdim=True).clamp_min(1e-6)
+    X=X*(target/row_norm).to(X.dtype)
+    X=X/(X.norm(dim=(-2,-1),keepdim=True)*1.01+1e-6)
+    if g.size(-2)>g.size(-1):
         for a,b,c in coeffs_list:
             A=X.mT@X
-            B=b*A+c*A@A
+            B=b*A+c*(A@A)
             X=a*X+X@B
-    # assert torch.linalg.svdvals(X.float()).amax(dim=1).max()<2.
-    g=X.to(dtype=g.dtype)
-    gmean=g.square().mean(red_dim,keepdim=True)
-    gnorm=(gmean*g.shape[red_dim]).sum(dim=(-1,-2),keepdim=True).sqrt()
-    momentum_buffer2.lerp_(gmean,1-momentum2)
-    s=momentum_buffer2.clamp_min(1e-10).rsqrt()
-    sg=s*g
-    g=sg*gnorm/(sg.norm(dim=(-2,-1),keepdim=True)+eps)
+    else:
+        for a,b,c in coeffs_list:
+            A=X@X.mT
+            B=b*A+c*(A@A)
+            X=a*X+B@X
+    g=X.to(dtype=stacked_params.dtype)
+    # Muon+ renormalization: snap the Frobenius norm to sqrt(min(m,n)) (https://arxiv.org/abs/2602.21545)
+    target_norm=min(g.size(-2),g.size(-1))**0.5
+    g=g*(target_norm/g.float().norm(dim=(-2,-1),keepdim=True).clamp_min(1e-6)).to(g.dtype)
+    # NorMuon variance reduction (https://arxiv.org/pdf/2510.05491)
+    v_mean=g.float().square().mean(dim=red_dim,keepdim=True)
+    red_dim_size=g.size(red_dim)
+    v_norm=(v_mean.sum(dim=(-2,-1),keepdim=True)*red_dim_size).sqrt()
+    momentum_buffer2.lerp_(v_mean.to(dtype=momentum_buffer2.dtype),1-momentum2)
+    step_size=momentum_buffer2.clamp_min(1e-10).rsqrt()
+    v_norm_new=((v_mean*red_dim_size)*step_size.float().square()).sum(dim=(-2,-1),keepdim=True).sqrt()
+    g=g*(step_size*(v_norm/v_norm_new.clamp_min(1e-10))).to(g.dtype)
+    # cautious weight decay
     mask=g*stacked_params>=0
     stacked_params.add_(-lr*g-lr*wd*mask*stacked_params)
- 
-    
+
+
 
 class MuonOptimizer(torch.optim.Optimizer):
     def __init__(self, param_groups:List[Dict]):
@@ -214,13 +225,14 @@ class MuonOptimizer(torch.optim.Optimizer):
             shape=stacked_param.shape
             if 'momentum_buffer1' not in state:
                 state['momentum_buffer1']=torch.zeros_like(stacked_param,device=device,dtype=dtype)
-                state['momentum_buffer2']=torch.zeros(shape[0],shape[1],1,device=device,dtype=dtype) if shape[2]>shape[1] else torch.zeros(shape[0],1,shape[2],device=device,dtype=dtype)
-            red_dim=-1 if shape[-1]>shape[-2] else -2
+                state['momentum_buffer2']=torch.zeros(shape[0],shape[1],1,device=device,dtype=dtype) if shape[1]>=shape[2] else torch.zeros(shape[0],1,shape[2],device=device,dtype=dtype)
+            red_dim=-1 if shape[-2]>=shape[-1] else -2
             self.muon_momentum1.fill_(group['momentum1'])
             self.muon_momentum2.fill_(group['momentum2'])
             self.muon_eps.fill_(group['eps'])
             self.muon_wd.fill_(group['wd'])
-            self.muon_lr.fill_(group['lr'])
+            # tall matrices (e.g. the mlp up projection) get a larger lr
+            self.muon_lr.fill_(group['lr']*max(1.0,shape[-2]/shape[-1])**0.5)
             fused_muon(
                 stacked_param,
                 owned_grad,

@@ -44,30 +44,32 @@ class RowState:
         self.tool_call=[]
         self.toolcall=False
 
+def execute_tool_call(toolcall:str,fns:dict,warn=True):
+    """run a tool call string like [{"function": {"name": ..., "arguments": "<json>"}}] and join the outputs"""
+    try:
+        calls=json.loads(toolcall)
+        results=[]
+        for fn in calls:
+            func=fn['function']
+            arg=json.loads(func['arguments'])
+            results.append(fns[func['name']](**arg))
+        return "\n".join(results)
+    except Exception as e:
+        wrong_info=f"Wrong when call tool, {e}, args {toolcall}."
+        if warn:
+            warnings.warn(wrong_info)
+        return wrong_info
+
 class Engine:
     def __init__(self,model,tokeniz,device_type):
         self.model=model
         self.tokeniz:tokenizer.Tokenizer=tokeniz
         self.gpt=getattr(model,"gpt",model)
         self.device_type=device_type
-        self.fn=[]
+        self.fn={}
     
     def safe_execute_function(self,toolcall):
-        try:
-            toolcall=json.loads(toolcall)
-            results=[]
-            for fn in toolcall:
-                func=fn['function']
-                name=func['name']
-                arguments=func['arguments']
-                arg=json.loads(arguments)
-                result=self.fn[name](**arg)
-                results.append(result)
-            return "\n".join(results)
-        except Exception as e:
-            wrong_info=f"Wrong when call tool, {e}, args {toolcall}."
-            warnings.warn(wrong_info)
-            return wrong_info
+        return execute_tool_call(toolcall,self.fn)
 
     @torch.inference_mode()
     def generate(self,token:torch.Tensor,num_samples,k=8,max_len=2048):

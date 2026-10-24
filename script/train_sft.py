@@ -46,7 +46,7 @@ parser.add_argument("--lmhead_lr",default=None,type=float,help="lmhead learning 
 parser.add_argument("--embedding_lr",default=None,type=float,help="learning rate for embedding (default: inherit from pretrain)")
 parser.add_argument("--matrix_lr",default=None,type=float,help="matrix learning rate (default: inherit from pretrain)")
 # model config
-parser.add_argument("--seq_len", default=1024, type=int, help="model sequence len")
+parser.add_argument("--seq_len", default=2048, type=int, help="model sequence len (same as pretrain, like nanochat)")
 from tasks import sftdata
 from tokenizer import tokenizer
 import torch
@@ -228,13 +228,21 @@ if resume_ckpt is None:
     pretrain_batch_token=resume_dict.get("batch_token", args.batch_token)
     batch_scale=(args.batch_token/pretrain_batch_token)**0.5
     override_scale=(args.batch_token/B_REF)**0.5
+    # 显式指定的 lr 也要乘 get_param_groups 里的 1/sqrt(d_model) 缩放
+    dmodel_lr_scale=(config.model_dim/768)**-0.5
+    value_embed_params={id(p) for p in orig_gpt.value_embeds.parameters()}
     for group in optimiz.param_groups:
+        first=group['params'][0]
         if group['kind']=='muon':
-            override=args.matrix_lr
-        elif group['params'][0] is orig_gpt.lm_head.weight:
-            override=args.lmhead_lr
+            override=None if args.matrix_lr is None else args.matrix_lr
+        elif first is orig_gpt.lm_head.weight:
+            override=None if args.lmhead_lr is None else args.lmhead_lr*dmodel_lr_scale
+        elif first is orig_gpt.transformer.wte.weight:
+            override=None if args.embedding_lr is None else args.embedding_lr*dmodel_lr_scale
+        elif id(first) in value_embed_params:
+            override=None if args.embedding_lr is None else args.embedding_lr*dmodel_lr_scale*0.5
         else:
-            override=args.embedding_lr
+            override=None # scalars always follow pretrain
         base_lr=override*override_scale if override is not None else group['init_lr']*batch_scale
         group['init_lr']=base_lr*args.init_lr_frac
         group['lr']=group['init_lr']

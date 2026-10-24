@@ -29,7 +29,7 @@ parser=argparse.ArgumentParser(description="Pretrain base model")
 #train config
 parser.add_argument("--device_batch_size",default=4,type=int,help="batch size per gradient step")
 parser.add_argument("--param_ratio",default=12,type=int,help="(the token we need) = (number of parameters in the model)* (param ratio)")
-parser.add_argument("--batch_token",default=2**19,type=int,help="how many token should have in one step")
+parser.add_argument("--batch_token",default=-1,type=int,help="how many token should have in one step (-1: auto, nanochat Power Lines rule B ∝ D^0.383)")
 parser.add_argument("--eval_token",default=80*2048,type=int,help="how many token we use for eval")
 parser.add_argument("--eval_every",default=250,type=int,help="evaluate the model per eval_every steps")
 parser.add_argument("--sample_every",default=500,type=int,help="sample the model per sample_every steps")
@@ -49,11 +49,12 @@ parser.add_argument("--lr_final",default=0.05,type=float,help="min lr")
 parser.add_argument("--lmhead_lr",default=0.008,type=float,help="lmhead learning rate")
 parser.add_argument("--embedding_lr",default=0.3,type=float,help="learning rate for embedding")
 parser.add_argument("--weight_decay",default=0.28,type=float,help="weight decay")
-parser.add_argument("--min_weight_decay_ratio",default=0.05,type=float,help="min weight decay ratio")
+parser.add_argument("--min_weight_decay_ratio",default=0.,type=float,help="min weight decay ratio (0: cosine decay to zero like nanochat)")
 parser.add_argument("--matrix_lr",default=0.02,type=float,help="matrix learning rate")
-# parser.add_argument("--scalar_lr",default=0.5,type=float,help="learning rate for scaler")
+parser.add_argument("--scalar_lr",default=0.5,type=float,help="learning rate for scalars (resid_lambdas, x0_lambdas)")
 #model config
-parser.add_argument("--seq_len",default=1024,type=int,help="model sequence len")
+parser.add_argument("--seq_len",default=2048,type=int,help="model sequence len")
+parser.add_argument("--window_pattern",default="SSSL",type=str,help="sliding window pattern tiled across layers, L=full context, S=quarter context")
 parser.add_argument("--depth",type=int,default=12,help="number of blocks of the model; model_dim and head num are derived from it (nanochat style)")
 parser.add_argument("--vocab_size",type=int,default=65536,help="vocab size of the model")
 parser.add_argument("--kv_num",type=int,default=None,help="kv head of the model (default: same as q head num, set smaller to use GQA)")
@@ -112,6 +113,24 @@ prompts=[
 # ]
 tokeniz=tokenizer.Tokenizer.from_dict(args.tokenizer_path,device=device)
 token_bytes=tokeniz.get_token_bytes()
+config=gpt.GPTConfig.from_depth(args.depth,kv_num=args.kv_num,seq_len=args.seq_len,vocab_size=args.vocab_size,window_pattern=args.window_pattern)
+orig_gpt=gpt.GPT(config,device,tokeniz)
+compiled_gpt=torch.compile(orig_gpt,dynamic=False)
+
+# scaling params: transformer matrices + lm_head give the cleanest scaling laws (nanochat)
+P=orig_gpt.get_model_scale()['transformer_matrix']+orig_gpt.get_model_scale()['lm_head_count']
+target_token=args.param_ratio*P        #token we need to train model   12*model_params
+# nanochat style hyperparameter transfer: the default lr/wd are tuned on d12 with batch_token=B_REF
+B_REF=2**19
+with torch.device("meta"):
+    ref_gpt=gpt.GPT(gpt.GPTConfig.from_depth(12,seq_len=args.seq_len,vocab_size=args.vocab_size),"meta",tokeniz)
+ref_scale=ref_gpt.get_model_scale()
+D_REF=args.param_ratio*(ref_scale['transformer_matrix']+ref_scale['lm_head_count'])
+del ref_gpt
+if args.batch_token==-1:
+    # Power Lines (https://arxiv.org/abs/2505.13738): optimal batch grows as D^0.383, rounded to a power of 2
+    args.batch_token=2**round(math.log2(B_REF*(target_token/D_REF)**0.383))
+    config_all["batch_token"]=args.batch_token
 if args.batch_token % args.seq_len != 0:
     raise ValueError(f"batch_token={args.batch_token} must be divisible by seq_len={args.seq_len}")
 batch_size=args.batch_token//args.seq_len
@@ -122,22 +141,9 @@ if batch_size < per_step or batch_size % per_step != 0:
         f"device_batch_size*world_size={args.device_batch_size}*{world_size}={per_step}"
     )
 gradient_step=batch_size//per_step
-config=gpt.GPTConfig.from_depth(args.depth,kv_num=args.kv_num,seq_len=args.seq_len,vocab_size=args.vocab_size)
-orig_gpt=gpt.GPT(config,device,tokeniz)
-compiled_gpt=torch.compile(orig_gpt,dynamic=False)
-
-P=orig_gpt.get_model_scale()['transformer_matrix']+orig_gpt.get_model_scale()['lm_head_count']
-target_token=args.param_ratio*P        #token we need to train model   12*model_params
 num_iteration=int(target_token/args.batch_token)
 if args.max_steps > 0:
     num_iteration=min(num_iteration,args.max_steps)
-# nanochat style hyperparameter transfer: the default lr/wd are tuned on d12 with batch_token=B_REF
-B_REF=2**19
-with torch.device("meta"):
-    ref_gpt=gpt.GPT(gpt.GPTConfig.from_depth(12,seq_len=args.seq_len,vocab_size=args.vocab_size),"meta",tokeniz)
-ref_scale=ref_gpt.get_model_scale()
-D_REF=args.param_ratio*(ref_scale['transformer_matrix']+ref_scale['lm_head_count'])
-del ref_gpt
 # Adam/Muon updates are normalized, so lr ∝ sqrt(B)
 batch_lr_scale=(args.batch_token/B_REF)**0.5
 # keep the AdamW timescale 1/(lr*wd) a fixed fraction of training: wd ∝ sqrt(B)/D
@@ -148,7 +154,8 @@ config_all.update(batch_lr_scale=batch_lr_scale,weight_decay_scaled=weight_decay
 select_result=[None]
 if is_main:
     try:
-        select_result[0]=pretraindata.select_train_files(args.data_dir,tokeniz,target_token)
+        # with --max_steps only the tokens we will actually train on need to exist
+        select_result[0]=pretraindata.select_train_files(args.data_dir,tokeniz,min(target_token,num_iteration*args.batch_token))
     except RuntimeError as e:
         select_result[0]=str(e)
 if ddp:
@@ -159,6 +166,7 @@ if isinstance(select_result[0],str):
     raise SystemExit(select_result[0])
 train_files,train_token_total=select_result[0]
 if is_main:
+    print("model scale:",{k:f"{v:,}" for k,v in orig_gpt.get_model_scale().items()})
     print(f"use {len(train_files)} train files, {train_token_total:,} tokens >= {args.param_ratio} * {P:,} params")
     print(f"total steps: {num_iteration:,} (target {target_token:,} tokens / {args.batch_token:,} tokens per step, "
           f"gradient_step {gradient_step})")
@@ -175,6 +183,7 @@ param_groups=orig_gpt.get_param_groups(
     lmhead_lr=args.lmhead_lr*batch_lr_scale,
     embedding_lr=args.embedding_lr*batch_lr_scale,
     matrix_lr=args.matrix_lr*batch_lr_scale,
+    scalar_lr=args.scalar_lr*batch_lr_scale,
     weight_decay=weight_decay_scaled,
 )
 optimiz=optimizer.MuonOptimizer(param_groups)

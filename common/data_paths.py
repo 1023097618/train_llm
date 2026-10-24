@@ -19,6 +19,11 @@ SFT_SMOLTALK = RAW_SFT / "smol-smoltalk" / "data"
 SFT_MMLU = RAW_SFT / "mmlu" / "all"
 SFT_GSM8K = RAW_SFT / "gsm8k" / "main"
 SFT_TOOLCALL = RAW_SFT / "hermes-function-calling-v1"
+# 评测数据，由 script/download_eval.py 下载
+RAW_EVAL = RAW_ROOT / "eval"
+EVAL_BUNDLE = RAW_EVAL / "eval_bundle"  # CORE (DCLM)
+EVAL_ARC = RAW_EVAL / "ai2_arc"
+EVAL_HUMANEVAL = RAW_EVAL / "openai_humaneval"
 SFT_IDENTITY = RAW_CUSTOM / "identity_conversations_en_d20.jsonl"
 SFT_T2A = PROCESSED_ROOT / "sft" / "t2a"
 SFT_A2A = PROCESSED_ROOT / "sft" / "a2a"

@@ -40,7 +40,11 @@ if rl_gsm8k:
     out += ["## RL on GSM8K (test, sampled at the RL temperature)", "",
             "| | " + " | ".join(keys) + " |", "|---|" + "---|" * len(keys),
             f"| step {start['step']} (SFT) | " + " | ".join(fmt(start[k]) for k in keys) + " |",
-            f"| step {last['step']} (RL) | " + " | ".join(fmt(last[k]) for k in keys) + " |", ""]
+            f"| step {last['step']} (last) | " + " | ".join(fmt(last[k]) for k in keys) + " |"]
+    if "best" in rl_gsm8k:
+        best = rl_gsm8k["best"]
+        out.append(f"| step {best['step']} (best, saved) | " + " | ".join(fmt(best[k]) for k in keys) + " |")
+    out.append("")
 if base.get("core"):
     out += ["## CORE tasks (centered accuracy)", "", "| task | accuracy | centered |", "|---|---|---|"]
     for task, acc in base["core"]["results"].items():

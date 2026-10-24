@@ -36,7 +36,9 @@ parser.add_argument("--use_wandb", type=int, default=1)
 parser.add_argument("--num_epochs", type=int, default=1, help="epochs over GSM8K train")
 parser.add_argument("--max_steps", type=int, default=0, help="stop early when > 0")
 parser.add_argument("--device_batch_size", type=int, default=8, help="max sequences per forward pass")
-parser.add_argument("--examples_per_step", type=int, default=16, help="questions per optimization step")
+# 32 questions per step (nanochat: 16) and init_lr_frac 0.02 (nanochat: 0.05): with nanochat's values the d12 policy
+# collapsed after ~70 steps, Muon's fixed size updates followed the noisy RL gradient and broke the matrices
+parser.add_argument("--examples_per_step", type=int, default=32, help="questions per optimization step")
 parser.add_argument("--num_samples", type=int, default=16, help="samples per question")
 # our JSON tool calls are much longer than nanochat's inline <<expr=result>>: with 256 tokens half of the SFT model's
 # GSM8K rollouts were cut off, and RL collapsed by learning to answer shorter instead of better
@@ -47,10 +49,9 @@ parser.add_argument("--embedding_lr", type=float, default=0.2)
 parser.add_argument("--lmhead_lr", type=float, default=0.004)
 parser.add_argument("--matrix_lr", type=float, default=0.02)
 parser.add_argument("--weight_decay", type=float, default=0.0)
-parser.add_argument("--init_lr_frac", type=float, default=0.05)
+parser.add_argument("--init_lr_frac", type=float, default=0.02)
 parser.add_argument("--eval_every", type=int, default=60)
 parser.add_argument("--eval_examples", type=int, default=400)
-parser.add_argument("--save_every", type=int, default=60)
 parser.add_argument("--gpu_memory_utilization", type=float, default=0.3, help="vLLM memory fraction (the training model shares the GPU)")
 parser.add_argument("--enforce_eager", type=int, default=0, help="disable vLLM cuda graphs")
 parser.add_argument("--report_dir", type=str, default=None, help="default: <save ckpt dir>/report")
@@ -112,14 +113,25 @@ def eval_passk(step):
     return passk
 
 
-def save(step, history):
-    tmp = args.save_ckpt_path + ".tmp"
-    torch.save({"model_state": model.state_dict(), "model_config": vars(config), "step": step,
-                "source_ckpt": args.ckpt_path}, tmp)
-    os.replace(tmp, args.save_ckpt_path)
+best = {"step": None, "pass@1": -1.0}
+
+
+def evaluate_and_save(step, history):
+    """eval pass@k; the checkpoint keeps the best pass@1 so far (step 0 is the SFT model itself),
+    so a policy that degrades later never overwrites a better one"""
+    history.append({"step": step, **eval_passk(step)})
+    if args.use_wandb:
+        run.log(history[-1], step=step)
+    if history[-1]["pass@1"] > best["pass@1"]:
+        best.update(step=step, **{"pass@1": history[-1]["pass@1"]})
+        tmp = args.save_ckpt_path + ".tmp"
+        torch.save({"model_state": model.state_dict(), "model_config": vars(config), "step": step,
+                    "source_ckpt": args.ckpt_path}, tmp)
+        os.replace(tmp, args.save_ckpt_path)
+        print(f"new best pass@1 {best['pass@1']:.4f}: saved {args.save_ckpt_path} (step {step})")
     write_report(args.report_dir or default_report_dir(args.save_ckpt_path), "rl_gsm8k",
-                 {"ckpt": args.save_ckpt_path, "start": history[0], "last": history[-1], "history": history})
-    print(f"saved {args.save_ckpt_path} (step {step})")
+                 {"ckpt": args.save_ckpt_path, "start": history[0], "last": history[-1],
+                  "best": next(h for h in history if h["step"] == best["step"]), "history": history})
 
 
 history = []
@@ -127,9 +139,7 @@ example_cursor = 0
 pbar = common.get_pbar()
 for step in range(num_steps):
     if step % args.eval_every == 0:
-        history.append({"step": step, **eval_passk(step)})
-        if args.use_wandb:
-            run.log(history[-1], step=step)
+        evaluate_and_save(step, history)
     t0 = time.time()
     # ---- rollouts ----
     indices = [(example_cursor + i) % len(train_task) for i in range(args.examples_per_step)]
@@ -185,13 +195,9 @@ for step in range(num_steps):
                          f"rollout {t_rollout:.1f}s, step {log['train/step_time']:.1f}s")
     print(f"step {step}/{num_steps} | reward {mean_reward:.3f} | seq len {log['train/sequence_length']:.0f} | truncated {truncated:.2f} | "
           f"rollout {t_rollout:.1f}s | step {log['train/step_time']:.1f}s", flush=True)
-    if (step > 0 and step % args.save_every == 0) and step != num_steps - 1:
-        save(step, history)
 
-history.append({"step": num_steps, **eval_passk(num_steps)})
-if args.use_wandb:
-    run.log(history[-1], step=num_steps)
-save(num_steps, history)
+evaluate_and_save(num_steps, history)
+print(f"best pass@1 {best['pass@1']:.4f} at step {best['step']}")
 pbar.close()
 engine.close()
 if args.use_wandb:

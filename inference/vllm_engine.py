@@ -1,6 +1,6 @@
 """vLLM backed sampler for RL rollouts and chat evaluation
 
-- runs vLLM in-process (VLLM_ENABLE_V1_MULTIPROCESSING=0) next to the training model on the same GPU
+- runs vLLM in-process (VLLM_ENABLE_V1_MULTIPROCESSING=0) on cuda:0, the training model may share it or use another GPU
 - update_weights() pushes the current torch weights into vLLM after every optimizer step
 - generate() samples completions with tool use: when the model emits <|/tool call|>, the call is
   executed and <|/assistant|><|tool output|>...<|/tool output|><|assistant|> is forced in (mask 0),
@@ -64,9 +64,11 @@ class VLLMEngine:
 
     @torch.no_grad()
     def update_weights(self, model):
-        """copy the torch model's current weights into vLLM (same process, same GPU)"""
-        weights = ((k, v.detach()) for k, v in model.state_dict().items() if k not in ("cos", "sin"))
-        self._vllm_model().load_weights(weights)
+        """copy the torch model's current weights into vLLM (same process, the training model may be on another GPU)"""
+        vllm_model = self._vllm_model()
+        device = next(vllm_model.parameters()).device
+        weights = ((k, v.detach().to(device)) for k, v in model.state_dict().items() if k not in ("cos", "sin"))
+        vllm_model.load_weights(weights)
         # cached KV blocks were computed with the old weights
         self.llm.reset_prefix_cache()
 

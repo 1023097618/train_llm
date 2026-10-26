@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # d24 (nanochat's GPT-2 grade reference size) on two 32GB GPUs
-#   pretrain + SFT: torchrun on both GPUs; CORE eval / chat eval / RL: first GPU only
+#   pretrain + SFT: torchrun on both GPUs; RL: vLLM on the first GPU, training on the second; CORE / chat eval: first GPU
 # setsid nohup bash run_2gpu_d24.sh > log/d24.log 2>&1 < /dev/null &
 # ps -eo pid,ppid,pgid,stat,etime,cmd | grep -E "run_2gpu_d24.sh|script\." | grep -v grep
 # kill -- -<pgid>
@@ -54,9 +54,9 @@ CUDA_VISIBLE_DEVICES=$GPUS $TORCHRUN -m script.train_sft --device_batch_size=2 -
     --identity_path=data/raw/custom/identity_conversations_en_d24.jsonl --identity_qa_path=data/raw/custom/identity_qa_d24.jsonl
 CUDA_VISIBLE_DEVICES=$EVAL_GPU python -m script.chat_eval --ckpt_path=$SFT_CKPT --tokenizer_path=$TOKENIZER --stage=sft --report_dir=$REPORT
 
-# ---- RL on GSM8K (1 GPU: training model + vLLM share it), then chat eval ----
-CUDA_VISIBLE_DEVICES=$EVAL_GPU python -m script.chat_rl --ckpt_path=$SFT_CKPT --tokenizer_path=$TOKENIZER --save_ckpt_path=$RL_CKPT \
-    --report_dir=$REPORT --device_batch_size=4 --gpu_memory_utilization=0.2
+# ---- RL on GSM8K (vLLM on the first GPU, training model on the second: d24 + optimizer state + vLLM do not fit one GPU), then chat eval ----
+CUDA_VISIBLE_DEVICES=$GPUS python -m script.chat_rl --ckpt_path=$SFT_CKPT --tokenizer_path=$TOKENIZER --save_ckpt_path=$RL_CKPT \
+    --report_dir=$REPORT --device_batch_size=4 --device=cuda:1 --gpu_memory_utilization=0.85
 CUDA_VISIBLE_DEVICES=$EVAL_GPU python -m script.chat_eval --ckpt_path=$RL_CKPT --tokenizer_path=$TOKENIZER --stage=rl --report_dir=$REPORT
 
 python -m script.report --report_dir=$REPORT

@@ -4,13 +4,17 @@
 3) DAPO style token level normalization
 4) advantage = reward - mean reward of the samples of the same question
 
-Rollouts are sampled with vLLM (same process, same GPU, weights pushed after every step).
+Rollouts are sampled with vLLM (same process, weights pushed after every step). vLLM always runs on cuda:0;
+--device puts the training model on another GPU, e.g. CUDA_VISIBLE_DEVICES=<vllm gpu>,<train gpu> ... --device=cuda:1
+(a d24 model with its optimizer state and vLLM do not fit on one 32GB GPU together).
 The model may call the calculator during rollouts; forced tool output tokens are not trained.
 pass@k on the GSM8K test set is evaluated at step 0 (= the SFT model) and every --eval_every steps.
 
 usage:
 python -m script.chat_rl --ckpt_path=weight/d20/sft_model.ckpt --tokenizer_path=weight/d20/tokenizer.pkl \
     --save_ckpt_path=weight/d20/rl_model.ckpt
+two GPUs (vLLM on GPU 3, training on GPU 0):
+CUDA_VISIBLE_DEVICES=3,0 python -m script.chat_rl ... --device=cuda:1 --gpu_memory_utilization=0.85
 """
 import sys
 sys.stdout.reconfigure(line_buffering=True)  # show progress in nohup logs immediately
@@ -52,13 +56,14 @@ parser.add_argument("--weight_decay", type=float, default=0.0)
 parser.add_argument("--init_lr_frac", type=float, default=0.02)
 parser.add_argument("--eval_every", type=int, default=60)
 parser.add_argument("--eval_examples", type=int, default=400)
-parser.add_argument("--gpu_memory_utilization", type=float, default=0.3, help="vLLM memory fraction (the training model shares the GPU)")
+parser.add_argument("--device", type=str, default="cuda:0", help="training model device, vLLM is always on cuda:0")
+parser.add_argument("--gpu_memory_utilization", type=float, default=0.3, help="vLLM memory fraction of cuda:0 (lower it when the training model shares the GPU)")
 parser.add_argument("--enforce_eager", type=int, default=0, help="disable vLLM cuda graphs")
 parser.add_argument("--report_dir", type=str, default=None, help="default: <save ckpt dir>/report")
 args = parser.parse_args()
 os.makedirs(os.path.dirname(os.path.abspath(args.save_ckpt_path)), exist_ok=True)
 
-device = "cuda"
+device = args.device
 torch.manual_seed(42)
 tokeniz = tokenizer.Tokenizer.from_dict(args.tokenizer_path, device=device)
 ckpt = torch.load(args.ckpt_path, map_location="cpu", weights_only=False)

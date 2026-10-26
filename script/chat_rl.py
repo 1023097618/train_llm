@@ -3,6 +3,11 @@
 2) on policy, so no PPO ratio + clip
 3) DAPO style token level normalization
 4) advantage = reward - mean reward of the samples of the same question
+Two optional additions beyond nanochat (both off by default):
+- --kl_beta: per token KL penalty to the frozen SFT model (k3 estimator as in GRPO), pulls back the drift that
+  noisy updates cause (without it the d12 and d24 policies degraded after ~100 steps)
+- --oversample: DAPO style dynamic sampling, roll out oversample * examples_per_step questions and train on the
+  first examples_per_step whose samples are not all right / all wrong (the others carry no learning signal)
 
 Rollouts are sampled with vLLM (same process, weights pushed after every step). vLLM always runs on cuda:0;
 --device puts the training model on another GPU, e.g. CUDA_VISIBLE_DEVICES=<vllm gpu>,<train gpu> ... --device=cuda:1
@@ -54,6 +59,9 @@ parser.add_argument("--lmhead_lr", type=float, default=0.004)
 parser.add_argument("--matrix_lr", type=float, default=0.02)
 parser.add_argument("--weight_decay", type=float, default=0.0)
 parser.add_argument("--init_lr_frac", type=float, default=0.02)
+parser.add_argument("--kl_beta", type=float, default=0.0, help="KL penalty to the SFT model, 0 = off (nanochat)")
+parser.add_argument("--ref_device", type=str, default="cuda:0", help="device of the frozen reference model (with --kl_beta)")
+parser.add_argument("--oversample", type=float, default=1.0, help="questions rolled out per step / examples_per_step, 1 = nanochat")
 parser.add_argument("--eval_every", type=int, default=60)
 parser.add_argument("--eval_examples", type=int, default=400)
 parser.add_argument("--device", type=str, default="cuda:0", help="training model device, vLLM is always on cuda:0")
@@ -70,6 +78,11 @@ ckpt = torch.load(args.ckpt_path, map_location="cpu", weights_only=False)
 config = gpt.GPTConfig(**ckpt["model_config"])
 model = gpt.GPT(config, device, tokeniz)
 model.load_state_dict(common.strip_prefix(ckpt["model_state"]))
+ref_model = None
+if args.kl_beta > 0:
+    ref_model = gpt.GPT(config, args.ref_device, tokeniz)
+    ref_model.load_state_dict(common.strip_prefix(ckpt["model_state"]))
+    ref_model.eval().requires_grad_(False)
 del ckpt
 
 param_groups = model.get_param_groups(lmhead_lr=args.lmhead_lr, embedding_lr=args.embedding_lr,
@@ -147,8 +160,9 @@ for step in range(num_steps):
         evaluate_and_save(step, history)
     t0 = time.time()
     # ---- rollouts ----
-    indices = [(example_cursor + i) % len(train_task) for i in range(args.examples_per_step)]
-    example_cursor += args.examples_per_step
+    num_rollout = max(args.examples_per_step, round(args.examples_per_step * args.oversample))
+    indices = [(example_cursor + i) % len(train_task) for i in range(num_rollout)]
+    example_cursor += num_rollout
     conversations = [train_task[i] for i in indices]
     prompts = [render_prompt(c) for c in conversations]
     outputs = engine.generate(prompts, num_samples=args.num_samples, max_tokens=args.max_new_tokens,
@@ -156,7 +170,7 @@ for step in range(num_steps):
     t_rollout = time.time() - t0
     # ---- policy gradient ----
     model.train()
-    mean_rewards, lengths = [], []
+    mean_rewards, lengths, kls = [], [], []
     truncated = sum(t[-1] != end_assistant for samples in outputs for t, _ in samples if t) / sum(len(s) for s in outputs)
     trained_questions = 0
     for conversation, prompt, samples in zip(conversations, prompts, outputs):
@@ -164,8 +178,8 @@ for step in range(num_steps):
         advantages = rewards - rewards.mean()
         mean_rewards.append(rewards.mean().item())
         lengths.extend(len(t) for t, _ in samples)
-        if advantages.abs().sum() == 0:
-            continue  # all samples equally good or bad: no learning signal for this question
+        if advantages.abs().sum() == 0 or trained_questions == args.examples_per_step:
+            continue  # all samples equally good or bad: no learning signal for this question (or the step is full)
         trained_questions += 1
         # the forward pass takes seq[:-1], so a sequence may hold at most seq_len + 1 tokens
         seqs = [(prompt + t)[:config.seq_len + 1] for t, _ in samples]
@@ -179,8 +193,18 @@ for step in range(num_steps):
         for b0 in range(0, len(seqs), args.device_batch_size):
             b1 = b0 + args.device_batch_size
             logp = -model(inputs[b0:b1], targets[b0:b1], reduction="none").loss.view(inputs[b0:b1].shape)
-            num_valid = (targets[b0:b1] >= 0).sum().clamp(min=1)
-            pg_obj = (logp * advantages[b0:b1].unsqueeze(-1)).sum() / (num_valid * num_passes * args.examples_per_step)
+            valid = targets[b0:b1] >= 0
+            num_valid = valid.sum().clamp(min=1)
+            obj = logp * advantages[b0:b1].unsqueeze(-1)
+            if ref_model is not None:
+                with torch.no_grad():
+                    logp_ref = -ref_model(inputs[b0:b1].to(args.ref_device), targets[b0:b1].to(args.ref_device),
+                                          reduction="none").loss.view(inputs[b0:b1].shape).to(device)
+                log_ratio = logp_ref - logp  # k3 estimator of KL(policy || ref): ratio - log ratio - 1 >= 0
+                kl = (torch.exp(log_ratio) - log_ratio - 1) * valid
+                obj = obj - args.kl_beta * kl
+                kls.append((kl.sum() / num_valid).item())
+            pg_obj = obj.sum() / (num_valid * num_passes * args.examples_per_step)
             (-pg_obj).backward()
     lrm = 1.0 - step / num_steps
     for g in optimiz.param_groups:
@@ -191,6 +215,7 @@ for step in range(num_steps):
         engine.update_weights(model)
     mean_reward = sum(mean_rewards) / len(mean_rewards)
     log = {"train/reward": mean_reward, "train/truncated": truncated, "train/trained_questions": trained_questions, "train/sequence_length": sum(lengths) / len(lengths), "train/lrm": lrm,
+           "train/kl": sum(kls) / len(kls) if kls else 0.0,
            "train/rollout_time": t_rollout, "train/step_time": time.time() - t0}
     if args.use_wandb:
         run.log(log, step=step)
@@ -198,7 +223,7 @@ for step in range(num_steps):
     pbar.refresh()
     pbar.set_postfix_str(f"step {step}: reward {mean_reward:.3f}, len {log['train/sequence_length']:.0f}, "
                          f"rollout {t_rollout:.1f}s, step {log['train/step_time']:.1f}s")
-    print(f"step {step}/{num_steps} | reward {mean_reward:.3f} | seq len {log['train/sequence_length']:.0f} | truncated {truncated:.2f} | "
+    print(f"step {step}/{num_steps} | reward {mean_reward:.3f} | trained {trained_questions}/{len(conversations)} | kl {log['train/kl']:.4f} | seq len {log['train/sequence_length']:.0f} | truncated {truncated:.2f} | "
           f"rollout {t_rollout:.1f}s | step {log['train/step_time']:.1f}s", flush=True)
 
 evaluate_and_save(num_steps, history)

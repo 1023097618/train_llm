@@ -14,7 +14,9 @@ from pyarrow import parquet as pq
 
 from common import data_paths
 from evaluation.execution import execute_code
-from tasks.sftdata import render_mc, GSM8K as SFTGSM8K, MMLU as SFTMMLU
+import json
+
+from tasks.sftdata import render_mc, CALCULATOR_TOOLS, GSM8K as SFTGSM8K, MMLU as SFTMMLU
 
 
 def _read_parquet(pattern):
@@ -127,6 +129,45 @@ class GSM8K(EvalTask):
         reference = extract_gsm8k_answer(conversation["messages"][-1]["content"])
         predicted = extract_gsm8k_answer(response)
         return predicted is not None and predicted == reference
+
+    def reward(self, conversation, response):
+        return float(self.evaluate(conversation, response))
+
+
+def _as_number(text):
+    try:
+        return float(text.replace(",", ""))
+    except (AttributeError, ValueError):
+        return None
+
+
+class NumericQA(EvalTask):
+    """math word problems with a numeric answer from jsonl files of {"question", "answer"} (RL data beyond the GSM8K
+    train set the SFT model has memorized, see script/prepare_rl_data.py); prompted exactly like GSM8K (calculator
+    available), the completion must end with "#### <number>", compared numerically"""
+    name = "NumericQA"
+    eval_type = "generative"
+
+    def __init__(self, paths):
+        self.rows = []
+        for path in paths.split(","):
+            with open(path, encoding="utf-8") as f:
+                self.rows.extend(json.loads(line) for line in f if line.strip())
+        super().__init__()
+
+    def num_rows(self):
+        return len(self.rows)
+
+    def get(self, index):
+        row = self.rows[index]
+        return {"messages": [{"role": "system", "content": "", "tools": CALCULATOR_TOOLS},
+                             {"role": "user", "content": row["question"]},
+                             {"role": "assistant", "content": f"#### {row['answer']}"}]}
+
+    def evaluate(self, conversation, response):
+        reference = _as_number(extract_gsm8k_answer(conversation["messages"][-1]["content"]))
+        predicted = _as_number(extract_gsm8k_answer(response))
+        return predicted is not None and reference is not None and abs(predicted - reference) <= 1e-6 * max(1.0, abs(reference))
 
     def reward(self, conversation, response):
         return float(self.evaluate(conversation, response))

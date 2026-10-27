@@ -20,6 +20,9 @@ SFT_MMLU = RAW_SFT / "mmlu" / "all"
 SFT_GSM8K = RAW_SFT / "gsm8k" / "main"
 SFT_TOOLCALL = RAW_SFT / "hermes-function-calling-v1"
 # 评测数据，由 script/download_eval.py 下载
+# RL questions beyond GSM8K train (script/prepare_rl_data.py)
+RAW_RL = RAW_ROOT / "rl"
+
 RAW_EVAL = RAW_ROOT / "eval"
 EVAL_BUNDLE = RAW_EVAL / "eval_bundle"  # CORE (DCLM)
 EVAL_ARC = RAW_EVAL / "ai2_arc"

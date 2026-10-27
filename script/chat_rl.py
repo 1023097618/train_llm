@@ -34,7 +34,7 @@ from common.report import default_report_dir, write_report
 from evaluation.sample import calculate
 from model import gpt
 from optimizer import optimizer
-from tasks.chateval import GSM8K, EvalTask
+from tasks.chateval import GSM8K, EvalTask, NumericQA
 from tokenizer import tokenizer
 
 parser = argparse.ArgumentParser(description="RL on GSM8K")
@@ -61,6 +61,7 @@ parser.add_argument("--weight_decay", type=float, default=0.0)
 parser.add_argument("--init_lr_frac", type=float, default=0.02)
 parser.add_argument("--kl_beta", type=float, default=0.0, help="KL penalty to the SFT model, 0 = off (nanochat)")
 parser.add_argument("--ref_device", type=str, default="cuda:0", help="device of the frozen reference model (with --kl_beta)")
+parser.add_argument("--train_data", type=str, default="", help="comma separated jsonl files of {question, answer} to train on instead of GSM8K train (script/prepare_rl_data.py)")
 parser.add_argument("--oversample", type=float, default=1.0, help="questions rolled out per step / examples_per_step, 1 = nanochat")
 parser.add_argument("--eval_every", type=int, default=60)
 parser.add_argument("--eval_examples", type=int, default=400)
@@ -95,7 +96,7 @@ from inference.vllm_engine import VLLMEngine
 engine = VLLMEngine(model, tokeniz, gpu_memory_utilization=args.gpu_memory_utilization,
                     enforce_eager=bool(args.enforce_eager), seed=42)
 
-train_task = GSM8K("train")
+train_task = NumericQA(args.train_data) if args.train_data else GSM8K("train")
 val_task = GSM8K("test")
 tools = {"calculate": calculate}
 end_assistant = tokeniz.special_token["<|/assistant|>"]
@@ -103,6 +104,7 @@ num_steps = (len(train_task) // args.examples_per_step) * args.num_epochs
 if args.max_steps > 0:
     num_steps = min(num_steps, args.max_steps)
 assert args.num_samples % args.device_batch_size == 0 or args.num_samples < args.device_batch_size
+print(f"RL train data: {args.train_data or 'GSM8K train'} ({len(train_task)} questions)")
 print(f"RL steps: {num_steps}, sequences per step: {args.examples_per_step * args.num_samples}")
 if args.use_wandb:
     import wandb

@@ -14,6 +14,8 @@ Rollouts are sampled with vLLM (same process, weights pushed after every step). 
 (a d24 model with its optimizer state and vLLM do not fit on one 32GB GPU together).
 The model may call the calculator during rollouts; forced tool output tokens are not trained.
 pass@k on the GSM8K test set is evaluated at step 0 (= the SFT model) and every --eval_every steps.
+Every --save_every steps the full training state (model, optimizer, step, data cursor, eval history) goes to
+<save_ckpt_path>.state; after the run is killed, the same command with --resume=1 continues from it.
 
 usage:
 python -m script.chat_rl --ckpt_path=weight/d20/sft_model.ckpt --tokenizer_path=weight/d20/tokenizer.pkl \
@@ -68,6 +70,8 @@ parser.add_argument("--eval_examples", type=int, default=400)
 parser.add_argument("--device", type=str, default="cuda:0", help="training model device, vLLM is always on cuda:0")
 parser.add_argument("--gpu_memory_utilization", type=float, default=0.3, help="vLLM memory fraction of cuda:0 (lower it when the training model shares the GPU)")
 parser.add_argument("--enforce_eager", type=int, default=0, help="disable vLLM cuda graphs")
+parser.add_argument("--save_every", type=int, default=30, help="save the resumable training state every N steps, 0 = never")
+parser.add_argument("--resume", type=int, default=0, help="1 = continue from <save_ckpt_path>.state")
 parser.add_argument("--report_dir", type=str, default=None, help="default: <save ckpt dir>/report")
 args = parser.parse_args()
 os.makedirs(os.path.dirname(os.path.abspath(args.save_ckpt_path)), exist_ok=True)
@@ -92,6 +96,14 @@ for g in param_groups:
     g["lr"] = g["init_lr"] = g["lr"] * args.init_lr_frac
 optimiz = optimizer.MuonOptimizer(param_groups)
 
+state_path = args.save_ckpt_path + ".state"
+resume = None
+if args.resume:
+    resume = torch.load(state_path, map_location="cpu", weights_only=False)
+    model.load_state_dict(resume["model_state"])  # before vLLM copies the weights
+    optimiz.load_state_dict(resume["optimizer_state"])
+    print(f"resumed from {state_path} at step {resume['step']}")
+
 from inference.vllm_engine import VLLMEngine
 engine = VLLMEngine(model, tokeniz, gpu_memory_utilization=args.gpu_memory_utilization,
                     enforce_eager=bool(args.enforce_eager), seed=42)
@@ -108,7 +120,8 @@ print(f"RL train data: {args.train_data or 'GSM8K train'} ({len(train_task)} que
 print(f"RL steps: {num_steps}, sequences per step: {args.examples_per_step * args.num_samples}")
 if args.use_wandb:
     import wandb
-    run = wandb.init(entity="enyuwang1023097618-123", project="mygpt-rl", config=vars(args))
+    run = wandb.init(entity="enyuwang1023097618-123", project="mygpt-rl", config=vars(args),
+                     **({"id": resume["wandb_id"], "resume": "allow"} if resume and resume.get("wandb_id") else {}))
 
 
 def render_prompt(conversation):
@@ -154,12 +167,29 @@ def evaluate_and_save(step, history):
                   "best": next(h for h in history if h["step"] == best["step"]), "history": history})
 
 
+def save_state(step):
+    """everything needed to continue at `step` (its eval is already in history), written atomically"""
+    tmp = state_path + ".tmp"
+    torch.save({"step": step, "model_state": common.to_cpu(model.state_dict()),
+                "optimizer_state": common.to_cpu(optimiz.state_dict()), "example_cursor": example_cursor,
+                "history": history, "best": dict(best), "wandb_id": run.id if args.use_wandb else None}, tmp)
+    os.replace(tmp, state_path)
+    print(f"saved training state at step {step} -> {state_path}")
+
+
 history = []
 example_cursor = 0
+start_step = 0
+if resume:
+    start_step, example_cursor, history = resume["step"], resume["example_cursor"], resume["history"]
+    best.update(resume["best"])
+    del resume
 pbar = common.get_pbar()
-for step in range(num_steps):
-    if step % args.eval_every == 0:
+for step in range(start_step, num_steps):
+    if step % args.eval_every == 0 and not (history and history[-1]["step"] == step):
         evaluate_and_save(step, history)
+    if args.save_every > 0 and step > start_step and step % args.save_every == 0:
+        save_state(step)
     t0 = time.time()
     # ---- rollouts ----
     num_rollout = max(args.examples_per_step, round(args.examples_per_step * args.oversample))

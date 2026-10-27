@@ -15,7 +15,7 @@ Rollouts are sampled with vLLM (same process, weights pushed after every step). 
 The model may call the calculator during rollouts; forced tool output tokens are not trained.
 pass@k on the GSM8K test set is evaluated at step 0 (= the SFT model) and every --eval_every steps.
 Every --save_every steps the full training state (model, optimizer, step, data cursor, eval history) goes to
-<save_ckpt_path>.state; after the run is killed, the same command with --resume=1 continues from it.
+<save_ckpt_path>.state; after the run is killed, the same command with --resume=<that .state file> continues from it.
 
 usage:
 python -m script.chat_rl --ckpt_path=weight/d20/sft_model.ckpt --tokenizer_path=weight/d20/tokenizer.pkl \
@@ -71,7 +71,7 @@ parser.add_argument("--device", type=str, default="cuda:0", help="training model
 parser.add_argument("--gpu_memory_utilization", type=float, default=0.3, help="vLLM memory fraction of cuda:0 (lower it when the training model shares the GPU)")
 parser.add_argument("--enforce_eager", type=int, default=0, help="disable vLLM cuda graphs")
 parser.add_argument("--save_every", type=int, default=30, help="save the resumable training state every N steps, 0 = never")
-parser.add_argument("--resume", type=int, default=0, help="1 = continue from <save_ckpt_path>.state")
+parser.add_argument("--resume", type=str, default="", help="training state file to continue from (<save_ckpt_path>.state), empty = start from --ckpt_path")
 parser.add_argument("--report_dir", type=str, default=None, help="default: <save ckpt dir>/report")
 args = parser.parse_args()
 os.makedirs(os.path.dirname(os.path.abspath(args.save_ckpt_path)), exist_ok=True)
@@ -99,10 +99,10 @@ optimiz = optimizer.MuonOptimizer(param_groups)
 state_path = args.save_ckpt_path + ".state"
 resume = None
 if args.resume:
-    resume = torch.load(state_path, map_location="cpu", weights_only=False)
+    resume = torch.load(args.resume, map_location="cpu", weights_only=False)
     model.load_state_dict(resume["model_state"])  # before vLLM copies the weights
     optimiz.load_state_dict(resume["optimizer_state"])
-    print(f"resumed from {state_path} at step {resume['step']}")
+    print(f"resumed from {args.resume} at step {resume['step']}")
 
 from inference.vllm_engine import VLLMEngine
 engine = VLLMEngine(model, tokeniz, gpu_memory_utilization=args.gpu_memory_utilization,

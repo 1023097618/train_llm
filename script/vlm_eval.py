@@ -48,12 +48,18 @@ def _listish(value):
 
 
 def mmstar():
-    """the options are part of the question text: '...\nOptions: A: x, B: y, C: z, D: w'"""
+    """two layouts: '...\nOptions: A: x, B: y, ...' and 'Hint: ...\nQuestion: ...\nChoices:\n(A) x\n(B) y ...'"""
     for r in _rows("MMStar/mmstar.parquet"):
-        question, _, options = r["question"].partition("\nOptions:")
-        choices = re.split(r",?\s*[A-D]:\s*", " " + options)[1:]
+        text = r["question"]
+        if "\nChoices:" in text:
+            question, _, options = text.partition("\nChoices:")
+            question = question.split("Question:", 1)[-1]
+            choices = re.split(r"\n?\([A-H]\)\s*", options.strip())[1:]
+        else:
+            question, _, options = text.partition("\nOptions:")
+            choices = re.split(r",?\s*[A-D]:\s*", " " + options)[1:]
         if len(choices) < 2:
-            continue
+            raise ValueError(f"cannot parse the options of MMStar question {r['index']}: {text!r}")
         letters = LETTERS[:len(choices)]
         yield _image(r["image"]), render_mc(question.strip(), letters, [c.strip() for c in choices]), letters, letters.index(r["answer"].strip())
 

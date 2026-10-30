@@ -250,15 +250,15 @@ def lr_multiplier(step):
 model.train()
 vision.train()
 for step in range(start_step, total_steps):
-    if step > start_step and step % args.eval_every == 0:
+    if step > start_step and args.eval_every > 0 and step % args.eval_every == 0:
         val = evaluate() if is_main else None
         if is_main:
             print(f"[eval] step {step}: val loss {val:.4f} | sample: {sample_caption()!r}")
             if run:
                 run.log({"val/loss": val}, step=step)
-        if step % args.save_every == 0:
+        if args.save_every > 0 and step % args.save_every == 0:
             save(step, val)
-    elif step > start_step and step % args.save_every == 0:
+    elif step > start_step and args.save_every > 0 and step % args.save_every == 0:
         save(step)
     t0 = time.time()
     lrm = lr_multiplier(step)
@@ -266,8 +266,11 @@ for step in range(start_step, total_steps):
         g["lr"] = g["init_lr"] * lrm
     total = torch.zeros((), device=device)
     n_images = 0
+    t_data = 0.0
     for _ in range(grad_accum):
+        t1 = time.time()
         x, y, segments, pixels, state = next(train_loader)
+        t_data += time.time() - t1
         loader_state[state["worker"]] = state
         n_images += pixels.shape[0]
         loss = forward(c_model, *(t.to(device, non_blocking=True) for t in (x, y, segments, pixels))) / grad_accum
@@ -282,7 +285,8 @@ for step in range(start_step, total_steps):
         dist.all_reduce(total, op=dist.ReduceOp.AVG)
     if is_main and (step % 10 == 0 or step == start_step):
         dt = time.time() - t0
-        print(f"step {step}/{total_steps} | loss {total.item():.4f} | lrm {lrm:.3f} | images {n_images} | {dt:.1f}s")
+        print(f"step {step}/{total_steps} | loss {total.item():.4f} | lrm {lrm:.3f} | images {n_images} | {dt:.1f}s "
+              f"(waiting for data {t_data:.1f}s)")
         if run:
             run.log({"train/loss": total.item(), "train/lrm": lrm, "train/step_time": dt, "train/images": n_images}, step=step)
 

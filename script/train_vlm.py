@@ -170,7 +170,7 @@ c_model = torch.compile(model, dynamic=False) if args.compile_gpt else model
 
 def forward(m, x, y, segments, pixels):
     image_embeds = vision.image_embeds(x, pixels, config.model_dim, image_pad_id)
-    return m(x, y, segment_ids=segments, image_embeds=image_embeds).loss
+    return m(x, y, segment_ids=segments, media_embeds=image_embeds).loss
 
 
 @torch.no_grad()
@@ -201,7 +201,7 @@ def sample_caption(max_tokens=80):
     model.eval()
     for _ in range(max_tokens):
         x = torch.tensor([tokens + out], device=device)
-        logits = model(x, image_embeds=vision.image_embeds(x, pixels, config.model_dim, image_pad_id)).logit
+        logits = model(x, media_embeds=vision.image_embeds(x, pixels, config.model_dim, image_pad_id)).logit
         nxt = int(logits[0, -1].argmax())
         if nxt == end:
             break

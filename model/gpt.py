@@ -70,6 +70,7 @@ def has_ve(layer_idx,n_layer):
 class GPTOutPut:
     logit:torch.Tensor=None
     loss:torch.Tensor=None
+    hidden:torch.Tensor=None # output of block hidden_layer (the talker's input, model/speech.py)
 
 
 class KVCache:
@@ -225,6 +226,7 @@ class GPT(nn.Module):
         assert all(c in 'SL' for c in  config.window_pattern),"char in config.window_pattern should be either 'S' or 'L'"
         self.output_vocab=tokeniz.n_vocab
         self.image_pad_id=tokeniz.special_token.get('<|image pad|>',-1)
+        self.audio_pad_id=tokeniz.special_token.get('<|audio pad|>',-1)
         assert config.vocab_size>=self.output_vocab,"tokenizer vocab num exceed the max num of embedding"
         super().__init__()
         cos_sin = get_cos_sin(config.seq_len,head_dim)
@@ -273,9 +275,10 @@ class GPT(nn.Module):
         cur=cur+gate*prev
         return cur if head is None else torch.cat([head,cur],dim=1)
 
-    def forward(self,x,y=None,kv_cache:KVCache=None,reduction:Literal['mean','none']='mean',segment_ids:torch.Tensor=None,image_embeds:torch.Tensor=None):
-        """image_embeds (B,T,C): replaces the token embedding wherever x is <|image pad|> (model/vision.py builds it;
-        a dense tensor instead of a variable number of image tokens keeps torch.compile shapes static)"""
+    def forward(self,x,y=None,kv_cache:KVCache=None,reduction:Literal['mean','none']='mean',segment_ids:torch.Tensor=None,media_embeds:torch.Tensor=None,hidden_layer:int=None,hidden_only:bool=False):
+        """media_embeds (B,T,C): replaces the token embedding wherever x is <|image pad|> or <|audio pad|> (built by
+        model/vision.py and model/speech.py; a dense tensor instead of a variable number of tokens keeps torch.compile
+        shapes static). hidden_layer: also return that block's output; hidden_only: stop right there"""
         T_curr = x.shape[-1]
         nowT = T_curr if kv_cache is None else T_curr + kv_cache.T_pre
         assert nowT<=self.config.seq_len,f"{nowT} exceed the max limit set to gpt {self.config.seq_len}"
@@ -290,19 +293,24 @@ class GPT(nn.Module):
         elif segment_ids is not None:
             seg_mask=(segment_ids[:,:,None]==segment_ids[:,None,:]).unsqueeze(1)
         emb=self.transformer.wte(x)
-        if image_embeds is not None:
-            emb=torch.where((x==self.image_pad_id).unsqueeze(-1),image_embeds.to(emb.dtype),emb)
+        if media_embeds is not None:
+            emb=torch.where(((x==self.image_pad_id)|(x==self.audio_pad_id)).unsqueeze(-1),media_embeds.to(emb.dtype),emb)
         emb=rms_norm(emb)
         emb=self.smear(emb,kv_cache=kv_cache,segment_ids=segment_ids)
         x0=emb
         backout_layer=self.config.n_layer//2
         x_backout=None
+        hidden=None
         for i,block in enumerate(self.transformer.blocks):
             emb=self.resid_lambdas[i]*emb+self.x0_lambdas[i]*x0
             ve=self.value_embeds[str(i)](x) if str(i) in self.value_embeds else None
             emb=block(emb,ve,cos_sin,kv_cache=kv_cache,seg_mask=seg_mask,block_masks=block_masks)
             if i==backout_layer:
                 x_backout=emb
+            if i==hidden_layer:
+                hidden=emb
+                if hidden_only:
+                    return GPTOutPut(hidden=hidden)
         emb=emb-self.backout_lambda.to(emb.dtype)*x_backout
         emb=rms_norm(emb)
         logit=self.lm_head(emb)[...,:self.output_vocab] #(B,T,vocab_size)
@@ -312,8 +320,8 @@ class GPT(nn.Module):
             kv_cache.T_pre+=T_curr
         if y is not None:
             loss=F.cross_entropy(logit.view(-1,logit.shape[-1]),y.reshape(-1),reduction=reduction,ignore_index=-1)
-            return GPTOutPut(logit=logit,loss=loss)
-        return GPTOutPut(logit=logit)
+            return GPTOutPut(logit=logit,loss=loss,hidden=hidden)
+        return GPTOutPut(logit=logit,hidden=hidden)
 
     def flex_block_masks(self,segment_ids,B,T):
         """one block mask per window size: causal, within the window, within the same document"""

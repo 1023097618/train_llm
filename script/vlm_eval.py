@@ -108,7 +108,7 @@ def run_task(model, vision, tokeniz, items, device, tokens_per_image, image_size
         last = torch.tensor([len(p) - 1 for p in prompts], device=device)
         pixels = None if no_image else preprocess([Image.open(io.BytesIO(b)) for b in images], image_size).to(device)
         embeds = None if no_image else vision.image_embeds(ids, pixels, model.config.model_dim, image_pad)
-        logits = model(ids, image_embeds=embeds).logit[torch.arange(len(prompts), device=device), last]
+        logits = model(ids, media_embeds=embeds).logit[torch.arange(len(prompts), device=device), last]
         for row, letters, gold in zip(logits, letter_ids, golds):
             pred = int(torch.tensor([row[l] for l in letters]).argmax())
             correct += pred == gold

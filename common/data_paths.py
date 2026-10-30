@@ -35,6 +35,7 @@ RAW_AUDIO = RAW_ROOT / "audio"
 AUDIO_MINIMIND_O = RAW_AUDIO / "minimind-o"      # English t2a / a2a mini sets, speech stored as Mimi codes
 AUDIO_MIMI = RAW_AUDIO / "mimi"                  # kyutai/mimi codec, 8 codebooks at 12.5 Hz, 24 kHz audio
 AUDIO_SENSEVOICE = RAW_AUDIO / "SenseVoiceSmall" # frozen speech encoder (input side)
+AUDIO_DATA = PROCESSED_ROOT / "audio"            # shuffled shards, a2a with SenseVoice features (prepare_audio_data.py)
 
 RAW_EVAL = RAW_ROOT / "eval"
 EVAL_BUNDLE = RAW_EVAL / "eval_bundle"  # CORE (DCLM)

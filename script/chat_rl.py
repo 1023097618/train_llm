@@ -83,6 +83,8 @@ ckpt = torch.load(args.ckpt_path, map_location="cpu", weights_only=False)
 config = gpt.GPTConfig(**ckpt["model_config"])
 model = gpt.GPT(config, device, tokeniz)
 model.load_state_dict(common.strip_prefix(ckpt["model_state"]))
+# a VLM checkpoint (train_vlm.py) keeps its image projector: RL is text only, the projector is passed through unchanged
+passthrough = {k: ckpt[k] for k in ("projector_state", "vision_config") if k in ckpt}
 ref_model = None
 if args.kl_beta > 0:
     ref_model = gpt.GPT(config, args.ref_device, tokeniz)
@@ -159,7 +161,7 @@ def evaluate_and_save(step, history):
         best.update(step=step, **{"pass@1": history[-1]["pass@1"]})
         tmp = args.save_ckpt_path + ".tmp"
         torch.save({"model_state": model.state_dict(), "model_config": vars(config), "step": step,
-                    "source_ckpt": args.ckpt_path}, tmp)
+                    "source_ckpt": args.ckpt_path, **passthrough}, tmp)
         os.replace(tmp, args.save_ckpt_path)
         print(f"new best pass@1 {best['pass@1']:.4f}: saved {args.save_ckpt_path} (step {step})")
     write_report(args.report_dir or default_report_dir(args.save_ckpt_path), "rl_gsm8k",

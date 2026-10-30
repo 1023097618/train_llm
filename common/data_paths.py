@@ -23,6 +23,13 @@ SFT_TOOLCALL = RAW_SFT / "hermes-function-calling-v1"
 # RL questions beyond GSM8K train (script/prepare_rl_data.py)
 RAW_RL = RAW_ROOT / "rl"
 
+# image understanding (script/download_vlm.py)
+RAW_VLM = RAW_ROOT / "vlm"
+VLM_MINIMIND_V = RAW_VLM / "minimind-v"          # ALLaVA-4V captions / instructions, 256x256 JPEG in parquet
+VLM_DATA = PROCESSED_ROOT / "vlm"                # English subset, shuffled shards (script/prepare_vlm_data.py)
+VLM_ENCODER = RAW_VLM / "siglip2-base-patch16-256"
+VLM_EVAL = RAW_VLM / "eval"                      # MMStar, AI2D, ScienceQA-IMG, MMBench
+
 RAW_EVAL = RAW_ROOT / "eval"
 EVAL_BUNDLE = RAW_EVAL / "eval_bundle"  # CORE (DCLM)
 EVAL_ARC = RAW_EVAL / "ai2_arc"

@@ -224,6 +224,7 @@ class GPT(nn.Module):
         assert head_dim %2 ==0,"head_dim must can be divided by 2"
         assert all(c in 'SL' for c in  config.window_pattern),"char in config.window_pattern should be either 'S' or 'L'"
         self.output_vocab=tokeniz.n_vocab
+        self.image_pad_id=tokeniz.special_token.get('<|image pad|>',-1)
         assert config.vocab_size>=self.output_vocab,"tokenizer vocab num exceed the max num of embedding"
         super().__init__()
         cos_sin = get_cos_sin(config.seq_len,head_dim)
@@ -272,7 +273,9 @@ class GPT(nn.Module):
         cur=cur+gate*prev
         return cur if head is None else torch.cat([head,cur],dim=1)
 
-    def forward(self,x,y=None,kv_cache:KVCache=None,reduction:Literal['mean','none']='mean',segment_ids:torch.Tensor=None):
+    def forward(self,x,y=None,kv_cache:KVCache=None,reduction:Literal['mean','none']='mean',segment_ids:torch.Tensor=None,image_embeds:torch.Tensor=None):
+        """image_embeds (B,T,C): replaces the token embedding wherever x is <|image pad|> (model/vision.py builds it;
+        a dense tensor instead of a variable number of image tokens keeps torch.compile shapes static)"""
         T_curr = x.shape[-1]
         nowT = T_curr if kv_cache is None else T_curr + kv_cache.T_pre
         assert nowT<=self.config.seq_len,f"{nowT} exceed the max limit set to gpt {self.config.seq_len}"
@@ -286,7 +289,10 @@ class GPT(nn.Module):
             block_masks=self.flex_block_masks(segment_ids,x.shape[0],T_curr)
         elif segment_ids is not None:
             seg_mask=(segment_ids[:,:,None]==segment_ids[:,None,:]).unsqueeze(1)
-        emb=rms_norm(self.transformer.wte(x))
+        emb=self.transformer.wte(x)
+        if image_embeds is not None:
+            emb=torch.where((x==self.image_pad_id).unsqueeze(-1),image_embeds.to(emb.dtype),emb)
+        emb=rms_norm(emb)
         emb=self.smear(emb,kv_cache=kv_cache,segment_ids=segment_ids)
         x0=emb
         backout_layer=self.config.n_layer//2

@@ -33,7 +33,7 @@ def to_messages(conversations, tokens_per_image):
     messages = []
     for m in json.loads(conversations):
         content = m["content"]
-        if "<image>" in content:
+        if m["role"] == "user" and "<image>" in content:
             parts = []
             for i, text in enumerate(content.split("<image>")):
                 if i > 0:
@@ -112,6 +112,10 @@ class VLMDataset(IterableDataset):
         """(tokens, mask, pixels) or None when filtered / too long"""
         conversation = preprocess_conversation({"source": "vlm", "messages": messages})
         if not conversation["messages"] or contains_banned_words(conversation):
+            return None
+        image_parts = sum(isinstance(m["content"], list) and sum(p["type"] == "image" for p in m["content"])
+                          for m in conversation["messages"])
+        if image_parts != len(images):  # e.g. an ALLaVA row with "<image>" in the reply text
             return None
         tokens, mask = self.tokeniz.render_conversation(conversation)
         if len(tokens) > self.seq_len + 1:

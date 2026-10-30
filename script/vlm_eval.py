@@ -48,13 +48,13 @@ def _listish(value):
 
 
 def mmstar():
-    """two layouts: '...\nOptions: A: x, B: y, ...' and 'Hint: ...\nQuestion: ...\nChoices:\n(A) x\n(B) y ...'"""
+    """two layouts: '...\nOptions: A: x, B: y, ...' and 'Hint: ...\nQuestion: ...\n[Choices:\n](A) x\n(B) y ...'"""
     for r in _rows("MMStar/mmstar.parquet"):
         text = r["question"]
-        if "\nChoices:" in text:
-            question, _, options = text.partition("\nChoices:")
-            question = question.split("Question:", 1)[-1]
-            choices = re.split(r"\n?\([A-H]\)\s*", options.strip())[1:]
+        if "\n(A)" in text:
+            question, _, options = text.partition("\n(A)")
+            question = question.replace("\nChoices:", "").split("Question:", 1)[-1]
+            choices = re.split(r"\n?\([A-H]\)\s*", "(A)" + options)[1:]
         else:
             question, _, options = text.partition("\nOptions:")
             choices = re.split(r",?\s*[A-D]:\s*", " " + options)[1:]

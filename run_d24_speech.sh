@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # d24 speech on two GPUs, thinker = the VLM + RL model (frozen): t2a (talker) -> a2a (talker + audio projector)
 # python -m script.download_audio && python -m script.prepare_audio_data first
-# GPUS=1,2 setsid nohup bash run_d24_speech.sh >> log/d24_speech.log 2>&1 < /dev/null &
+# GPUS=1 setsid nohup bash run_d24_speech.sh >> log/d24_speech.log 2>&1 < /dev/null &
 # Rerunning the same command after a kill continues where it stopped: finished stages are skipped
 # (<ckpt>.done), an unfinished stage resumes from its <ckpt>.state.
 set -e
@@ -25,7 +25,8 @@ T2A_CKPT=$WEIGHT_DIR/speech_t2a.ckpt
 A2A_CKPT=$WEIGHT_DIR/speech_a2a.ckpt
 mkdir -p log
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-TORCHRUN="torchrun --standalone --nproc_per_node=2"
+# one process per GPU in GPUS; a stage must resume with the same number of GPUs it started with
+TORCHRUN="torchrun --standalone --nproc_per_node=$(echo "$GPUS" | tr ',' '\n' | wc -l)"
 
 stage() {
     local name=$1 ckpt=$2; shift 2
@@ -38,4 +39,7 @@ stage() {
 }
 
 stage t2a $T2A_CKPT
+# the a2a features may still be computing (prepare_audio_data writes the shards at its very end)
+while pgrep -f "^python -m script.prepare_audio_data" > /dev/null; do sleep 60; done
+[ "$(ls data/processed/audio/a2a | wc -l)" -gt 10 ] || { echo "a2a shards missing, run prepare_audio_data --sets=a2a"; exit 1; }
 stage a2a $A2A_CKPT --speech_ckpt=$T2A_CKPT

@@ -15,8 +15,11 @@ import os
 
 import numpy as np
 import pyarrow as pa
+import soundfile as sf
 import torch
+import torchaudio
 from pyarrow import parquet as pq
+from torch.utils.data import DataLoader, Dataset
 
 from common.data_paths import AUDIO_DATA, AUDIO_MINIMIND_O, AUDIO_SENSEVOICE
 
@@ -26,45 +29,87 @@ parser.add_argument("--rows_per_shard", type=int, default=5000)
 parser.add_argument("--val_rows", type=int, default=1000)
 parser.add_argument("--max_rows", type=int, default=0, help="per set, for a quick test")
 parser.add_argument("--sets", type=str, default="t2a,a2a")
+parser.add_argument("--num_workers", type=int, default=16, help="a2a: processes decoding the spoken questions")
 args = parser.parse_args()
 
 AUDIO_EMB_DIM = 512
 
 
-def build_sensevoice(model_dir, device):
-    """mp3/wav bytes -> (frames, 512) float16 SenseVoice encoder features"""
+class QuestionFeatures(Dataset):
+    """decodes the spoken questions of one shard and computes their fbank features in DataLoader workers (the CPU part)"""
+
+    def __init__(self, questions, frontend):
+        self.questions, self.frontend = questions, frontend
+
+    def __len__(self):
+        return len(self.questions)
+
+    def __getitem__(self, i):
+        out = []
+        for audio_bytes in self.questions[i] or []:
+            wav, rate = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=False)
+            if wav.ndim == 2:
+                wav = wav.mean(axis=1)
+            x = torch.from_numpy(wav)
+            if rate != 16000:
+                x = torchaudio.functional.resample(x, rate, 16000)
+            x = x.unsqueeze(0)
+            out.append(self.frontend(x, torch.tensor([x.shape[1]])))
+        return out
+
+
+def write_a2a_shards(table):
+    """the features are too large for one Arrow column (2GB offsets), so each shard is encoded and written on its own;
+    finished shards are kept, a rerun continues with the next one"""
     import funasr
-    import soundfile as sf
-    import torchaudio.functional as F
-    wrapper = funasr.AutoModel(model=str(model_dir), disable_update=True, device=device)
+    wrapper = funasr.AutoModel(model=str(AUDIO_SENSEVOICE), disable_update=True, device=args.device)
     frontend = wrapper.kwargs["frontend"]
-    encoder = wrapper.model.encoder.to(device).eval()
+    encoder = wrapper.model.encoder.to(args.device).eval()
+    out_dir = AUDIO_DATA / "a2a"
+    os.makedirs(out_dir, exist_ok=True)
+    shards = shard_indices(table.num_rows)
+    autocast = dict(device_type=torch.device(args.device).type, dtype=torch.bfloat16, enabled=args.device.startswith("cuda"))
+    for n, idx in enumerate(shards):
+        path = out_dir / f"a2a-{n:05d}.parquet"
+        if path.exists():
+            print(f"a2a: shard {n} exists", flush=True)
+            continue
+        rows = table.take(pa.array(idx))
+        data = QuestionFeatures(rows.column("question_audios").to_pylist(), frontend)
+        embs, lens = [], []
+        with torch.inference_mode():
+            for row in DataLoader(data, batch_size=None, num_workers=args.num_workers, prefetch_factor=8 if args.num_workers else None):
+                row_embs, row_lens = [], []
+                for fbank, fbank_lens in row:
+                    with torch.autocast(**autocast):
+                        emb, _ = encoder(fbank.to(args.device), fbank_lens.to(args.device))
+                    emb = emb.squeeze(0).float().cpu().numpy().astype(np.float16)
+                    assert emb.ndim == 2 and emb.shape[1] == AUDIO_EMB_DIM, emb.shape
+                    row_embs.append(emb.tobytes())
+                    row_lens.append(emb.shape[0])
+                embs.append(row_embs)
+                lens.append(row_lens)
+        rows = rows.drop_columns(["question_audios"])
+        rows = rows.append_column("question_audio_embs", pa.array(embs, type=pa.list_(pa.large_binary())))
+        rows = rows.append_column("question_audio_lens", pa.array(lens, type=pa.list_(pa.int32())))
+        pq.write_table(rows, str(path) + ".tmp", row_group_size=500)
+        os.replace(str(path) + ".tmp", path)
+        print(f"a2a: shard {n + 1}/{len(shards)} written", flush=True)
+    print(f"a2a: {table.num_rows} rows in {len(shards)} shards -> {out_dir}")
 
-    @torch.inference_mode()
-    def encode(audio_bytes):
-        wav, rate = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=False)
-        if wav.ndim == 2:
-            wav = wav.mean(axis=1)
-        x = torch.from_numpy(wav)
-        if rate != 16000:
-            x = F.resample(x, rate, 16000)
-        x = x.unsqueeze(0)
-        fbank, fbank_lens = frontend(x, torch.tensor([x.shape[1]]))
-        with torch.autocast(device_type=torch.device(device).type, dtype=torch.bfloat16, enabled=device.startswith("cuda")):
-            emb, _ = encoder(fbank.to(device), fbank_lens.to(device))
-        emb = emb.squeeze(0).float().cpu().numpy().astype(np.float16)
-        assert emb.ndim == 2 and emb.shape[1] == AUDIO_EMB_DIM, emb.shape
-        return emb.tobytes(), emb.shape[0]
 
-    return encode
+def shard_indices(num_rows):
+    """shuffled rows split into shards, the last shard is the validation split"""
+    order = np.random.default_rng(0).permutation(num_rows)
+    val, train = order[-args.val_rows:], order[:-args.val_rows]
+    return [train[i:i + args.rows_per_shard] for i in range(0, len(train), args.rows_per_shard)] + [val]
 
 
 def write_shards(name, table):
     out_dir = AUDIO_DATA / name
     os.makedirs(out_dir, exist_ok=True)
-    order = np.random.default_rng(0).permutation(table.num_rows)
-    val, train = order[-args.val_rows:], order[:-args.val_rows]
-    shards = [train[i:i + args.rows_per_shard] for i in range(0, len(train), args.rows_per_shard)] + [val]
+    shards = shard_indices(table.num_rows)
+    val, train = shards[-1], np.concatenate(shards[:-1])
     for n, idx in enumerate(shards):
         pq.write_table(table.take(pa.array(idx)), out_dir / f"{name}-{n:05d}.parquet", row_group_size=500)
     print(f"{name}: {len(train)} train + {len(val)} val rows in {len(shards)} shards -> {out_dir}")
@@ -75,17 +120,7 @@ for name in args.sets.split(","):
     if args.max_rows:
         table = table.slice(0, args.max_rows)
     if name == "a2a":
-        encode = build_sensevoice(AUDIO_SENSEVOICE, args.device)
-        embs, lens = [], []
-        for i, questions in enumerate(table.column("question_audios").to_pylist()):
-            encoded = [encode(q) for q in (questions or [])]
-            embs.append([e for e, _ in encoded])
-            lens.append([n for _, n in encoded])
-            if i % 2000 == 0:
-                print(f"a2a: encoded {i}/{table.num_rows} rows", flush=True)
-        table = table.drop_columns(["question_audios"])
-        table = table.append_column("question_audio_embs", pa.array(embs, type=pa.list_(pa.binary())))
-        table = table.append_column("question_audio_lens", pa.array(lens, type=pa.list_(pa.int32())))
-    else:
-        table = table.drop_columns([c for c in ("question_audios",) if c in table.column_names])
+        write_a2a_shards(table)
+        continue
+    table = table.drop_columns([c for c in ("question_audios",) if c in table.column_names])
     write_shards(name, table)

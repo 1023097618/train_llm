@@ -178,6 +178,9 @@ def save(step, val=None):
             torch.save(payload, args.save_ckpt_path + ".tmp")
             os.replace(args.save_ckpt_path + ".tmp", args.save_ckpt_path)
             print(f"saved {args.save_ckpt_path} (step {step}, val {val})")
+        # the samples keep improving while the validation loss rises: keep the weights of each sample stage to choose by eye
+        if step % args.sample_every == 0 or step == total_steps:
+            torch.save(payload, f"{args.save_ckpt_path}.step{step:06d}")
         torch.save({**payload, "optimizer_state": states, "loader_state": loaders, "best_val": best_val,
                     "wandb_id": run.id if run else None}, args.save_ckpt_path + ".state.tmp")
         os.replace(args.save_ckpt_path + ".state.tmp", args.save_ckpt_path + ".state")

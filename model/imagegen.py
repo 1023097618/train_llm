@@ -132,4 +132,11 @@ def load_vq(model_dir, device):
         image = model.decode_code(tokens.flatten().to(device), (1, 8, GRID, GRID))[0].float().clamp(-1, 1)
         return ((image.permute(1, 2, 0).cpu().numpy() + 1) * 127.5).round().astype("uint8")
 
+    @torch.no_grad()
+    def encode(pixels):
+        """uint8 (N, 3, 256, 256) -> VQ token ids (N, GRID ** 2)"""
+        _, _, info = model.encode(pixels.to(device).float() / 127.5 - 1)
+        return info[2].view(pixels.shape[0], -1)
+
+    decode.encode = encode
     return decode

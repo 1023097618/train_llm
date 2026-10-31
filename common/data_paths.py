@@ -37,6 +37,12 @@ AUDIO_MIMI = RAW_AUDIO / "mimi"                  # kyutai/mimi codec, 8 codebook
 AUDIO_SENSEVOICE = RAW_AUDIO / "SenseVoiceSmall" # frozen speech encoder (input side)
 AUDIO_DATA = PROCESSED_ROOT / "audio"            # shuffled shards, a2a with SenseVoice features (prepare_audio_data.py)
 
+# image generation (script/prepare_t2i_data.py)
+RAW_T2I = RAW_ROOT / "t2i"
+T2I_RAW_VQ = RAW_T2I / "vq256"                    # caption + LlamaGen VQ-16 tokens of 256x256 images (text-to-image-2M)
+T2I_VQ_MODEL = RAW_T2I / "llamagen-vq"            # the VQ decoder
+T2I_DATA = PROCESSED_ROOT / "t2i_en256"           # English captions only, shuffled shards
+
 RAW_EVAL = RAW_ROOT / "eval"
 EVAL_BUNDLE = RAW_EVAL / "eval_bundle"  # CORE (DCLM)
 EVAL_ARC = RAW_EVAL / "ai2_arc"

@@ -25,6 +25,13 @@ T2A_CKPT=$WEIGHT_DIR/speech_t2a.ckpt
 A2A_CKPT=$WEIGHT_DIR/speech_a2a.ckpt
 mkdir -p log
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# wandb: api.wandb.ai answers 403 to the server's direct connection, its small traffic goes through the forwarded proxy;
+# without the proxy log offline (wandb sync later) so a dead tunnel can't stop the training
+if curl -s -o /dev/null --max-time 10 -x http://127.0.0.1:7890 https://api.wandb.ai/healthz; then
+    export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 NO_PROXY=localhost,127.0.0.1
+else
+    export WANDB_MODE=offline
+fi
 # one process per GPU in GPUS; a stage must resume with the same number of GPUs it started with
 TORCHRUN="torchrun --standalone --nproc_per_node=$(echo "$GPUS" | tr ',' '\n' | wc -l)"
 

@@ -136,7 +136,7 @@ def load_vq(model_dir, device):
     def encode(pixels):
         """uint8 (N, 3, 256, 256) -> VQ token ids (N, GRID ** 2)"""
         _, _, info = model.encode(pixels.to(device).float() / 127.5 - 1)
-        return info[2].view(pixels.shape[0], -1)
+        return info[-1].view(pixels.shape[0], -1)
 
     decode.encode = encode
     return decode

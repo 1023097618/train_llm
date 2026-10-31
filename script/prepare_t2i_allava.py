@@ -26,7 +26,7 @@ from common.data_paths import PROCESSED_ROOT, T2I_VQ_MODEL, VLM_DATA
 from model.imagegen import load_vq
 
 parser = argparse.ArgumentParser(description="VQ tokens of the ALLaVA images")
-parser.add_argument("--batch_size", type=int, default=256)
+parser.add_argument("--batch_size", type=int, default=64)
 parser.add_argument("--num_workers", type=int, default=12)
 parser.add_argument("--max_chars", type=int, default=300, help="caption length limit")
 parser.add_argument("--max_shards", type=int, default=0)

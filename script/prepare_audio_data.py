@@ -100,7 +100,8 @@ def write_a2a_shards(table):
         loader = DataLoader(data, batch_size=None, num_workers=args.num_workers, prefetch_factor=8 if args.num_workers else None)
         for r, row in enumerate(loader):
             questions_per_row.append(len(row))
-            pending += [((r, q), fbank[0]) for q, (fbank, _) in enumerate(row)]
+            # clone: a tensor from a worker holds a file descriptor while it lives, and thousands of them wait here
+            pending += [((r, q), fbank[0].clone()) for q, (fbank, _) in enumerate(row)]
             if len(pending) >= args.encode_batch * 16:
                 flush()
         flush()

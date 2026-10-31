@@ -35,6 +35,8 @@ class TalkerConfig:
     audio_spk_token: int = 2052
     adapter_rank: int = 256     # per codebook low rank adapters on the shared embedding / head
     stop_loss_weight: float = 10.0
+    text_vocab_size: int = 65536
+    text_rank: int = 256        # dimension of the talker's own embedding of the thinker's text tokens
 
 
 class AudioProjector(nn.Module):
@@ -75,6 +77,12 @@ class Talker(nn.Module):
                                       Linear(c.model_dim, c.model_dim, bias=False))
         self.bridge_proj = nn.Sequential(Linear(thinker_dim, thinker_dim, bias=False), nn.ReLU(),
                                          Linear(thinker_dim, c.model_dim, bias=False))
+        # the thinker's state carries semantic, not phonetic, similarity (Qwen2.5-Omni 2.3): the talker also sees the text
+        # tokens, through its own embedding since the thinker is frozen
+        self.text_emb = Embedding(c.text_vocab_size, c.text_rank)
+        self.text_proj = nn.Sequential(Linear(c.text_rank, c.model_dim, bias=False), nn.ReLU(),
+                                       Linear(c.model_dim, c.model_dim, bias=False))
+        self.text_scale = nn.Parameter(torch.tensor(1.0))
         self.audio_scale = nn.Parameter(torch.tensor(1.0))
         self.bridge_scale = nn.Parameter(torch.tensor(3.0))
         # full context blocks; the value embedding gate of gpt.Block is not used here
@@ -99,10 +107,11 @@ class Talker(nn.Module):
         c = self.config
         s = (3 / c.model_dim) ** 0.5
         nn.init.normal_(self.base_emb.weight, std=0.6)
+        nn.init.normal_(self.text_emb.weight, std=0.6)
         for seq in self.emb_adapters:
             nn.init.normal_(seq[0].weight, std=0.6)
             nn.init.uniform_(seq[2].weight, -(3 / c.adapter_rank) ** 0.5, (3 / c.adapter_rank) ** 0.5)
-        for seq in (self.emb_proj, self.spk_proj, self.bridge_proj):
+        for seq in (self.emb_proj, self.spk_proj, self.bridge_proj, self.text_proj):
             for layer in (seq[0], seq[2]):
                 bound = (3 / layer.weight.shape[1]) ** 0.5
                 nn.init.uniform_(layer.weight, -bound, bound)
@@ -130,11 +139,12 @@ class Talker(nn.Module):
             x[mask] = self.spk_proj(spk_emb.float())
         return x
 
-    def forward(self, audio_ids, bridge, targets=None, segment_ids=None, spk_emb=None, kv_cache=None):
-        """audio_ids (B, 8, T), bridge: thinker state (B, T, thinker_dim), targets (B, 8, T) with -1 = ignored.
+    def forward(self, audio_ids, bridge, text_ids, targets=None, segment_ids=None, spk_emb=None, kv_cache=None):
+        """audio_ids (B, 8, T), bridge: thinker state (B, T, thinker_dim), text_ids (B, T), targets (B, 8, T) with -1 = ignored.
         Returns logits (B, 8, T, V) and with targets also (loss, per codebook losses)"""
         x = rms_norm(self.emb_proj(self.embed(audio_ids, spk_emb))) * self.audio_scale + \
-            rms_norm(self.bridge_proj(bridge.float())) * self.bridge_scale
+            rms_norm(self.bridge_proj(bridge.float())) * self.bridge_scale + \
+            rms_norm(self.text_proj(self.text_emb(text_ids).float())) * self.text_scale
         x = x.to(torch.bfloat16)
         seg_mask = None
         if segment_ids is not None:

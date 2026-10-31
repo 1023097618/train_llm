@@ -174,7 +174,7 @@ def forward(x, y, segments, features, speakers):
         media = audio_proj.media_embeds(text_x, features.to(device, non_blocking=True), config.model_dim, audio_pad_id)
         out = c_thinker(text_x, text_y, segment_ids=segments, media_embeds=media, hidden_layer=hidden_layer)
         bridge, text_loss = out.hidden, out.loss
-    _, audio_loss, per_codebook = talker(audio_x, bridge, audio_y, segments, spk_emb=speakers)
+    _, audio_loss, per_codebook = talker(audio_x, bridge, text_x, audio_y, segments, spk_emb=speakers)
     return audio_loss + text_loss, audio_loss, text_loss, per_codebook
 
 

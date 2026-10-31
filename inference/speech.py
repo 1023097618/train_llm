@@ -28,7 +28,7 @@ def generate_speech(thinker, talker, tokeniz, prompt, hidden_layer, media_embeds
     audio = torch.full((1, NUM_CODEBOOKS, len(prompt)), c.audio_pad_token, device=device)
     audio[0, 0, -1] = c.audio_start_token  # codebook j starts j positions later
     out = thinker(x, kv_cache=thinker_cache, media_embeds=media_embeds, hidden_layer=hidden_layer)
-    audio_logits = talker(audio, out.hidden, kv_cache=talker_cache)
+    audio_logits = talker(audio, out.hidden, x, kv_cache=talker_cache)
     text_out, codes = [], [[] for _ in range(NUM_CODEBOOKS)]
     text_done, stop_step = False, None
     for step in range(total - len(prompt) - 1):
@@ -57,8 +57,9 @@ def generate_speech(thinker, talker, tokeniz, prompt, hidden_layer, media_embeds
                     next_audio[0, j, 0] = code
         if stop_step is not None and step >= stop_step + NUM_CODEBOOKS:
             break
-        out = thinker(torch.tensor([[token]], device=device), kv_cache=thinker_cache, hidden_layer=hidden_layer)
-        audio_logits = talker(next_audio, out.hidden, kv_cache=talker_cache)
+        next_text = torch.tensor([[token]], device=device)
+        out = thinker(next_text, kv_cache=thinker_cache, hidden_layer=hidden_layer)
+        audio_logits = talker(next_audio, out.hidden, next_text, kv_cache=talker_cache)
     frames = min(len(c_) for c_ in codes)
     return tokeniz.decode(text_out), torch.tensor([c_[:frames] for c_ in codes], dtype=torch.long)
 

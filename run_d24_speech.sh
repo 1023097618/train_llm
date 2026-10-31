@@ -21,8 +21,8 @@ GPUS=${GPUS:-1,2}
 WEIGHT_DIR=weight/d24
 TOKENIZER=$WEIGHT_DIR/tokenizer.pkl
 THINKER=$WEIGHT_DIR/vlm_rl.ckpt
-T2A_CKPT=$WEIGHT_DIR/speech_t2a.ckpt
-A2A_CKPT=$WEIGHT_DIR/speech_a2a.ckpt
+T2A_CKPT=$WEIGHT_DIR/speech_t2a_v2.ckpt   # v2: the talker also sees the text tokens
+A2A_CKPT=$WEIGHT_DIR/speech_a2a_v2.ckpt
 mkdir -p log
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # wandb: api.wandb.ai answers 403 to the server's direct connection, its small traffic goes through the forwarded proxy;
@@ -46,6 +46,8 @@ stage() {
 }
 
 stage t2a $T2A_CKPT
+# a2a only after script/speech_eval.py shows the talker says what the thinker wrote
+[ -n "$RUN_A2A" ] || { echo "t2a done, run speech_eval; RUN_A2A=1 continues with a2a"; exit 0; }
 # the a2a features may still be computing (prepare_audio_data writes the shards at its very end)
 while pgrep -f "^python -m script.prepare_audio_data" > /dev/null; do sleep 60; done
 [ "$(ls data/processed/audio/a2a | wc -l)" -gt 10 ] || { echo "a2a shards missing, run prepare_audio_data --sets=a2a"; exit 1; }

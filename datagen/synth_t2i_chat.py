@@ -7,6 +7,9 @@
 - vague:     the user asks for a vague change ("cuter", "more dramatic"), the description changes in concrete visible ways
 - bare:      only a subject is asked for; each conversation is given another look and place, so the first picture is not always the same
 - faithful:  the request has specific details, all of which must reach the description
+- replace:   the user changes one attribute; the old value must leave the description, not stand next to the new one
+- revert:    after a change the user asks to go back; the description returns to the earlier one
+- helpful:   everyday questions (names, lists, advice, explanations) answered usefully, without drawing
 - mixed:     normal chat before or after drawing, questions about the image are answered from its description
 - no_draw:   talks about pictures or art without asking for one, the assistant answers and does not draw
 
@@ -57,6 +60,12 @@ KINDS = {
     "faithful": ("The user asks for one image and gives two to four specific details, such as what the subject wears or holds, "
                  "colors, numbers, the action and the place. The assistant draws it right away. Its description contains every "
                  "detail the user gave, in the user's words, and adds only a little light and setting."),
+    "replace": ("The user asks for an image of {old} {thing}, then says to make the {thing} {new}. The assistant draws again: the "
+                "description is the previous one word for word, with \"{old}\" replaced by \"{new}\". The word \"{old}\" no longer appears."),
+    "revert": ("The user asks for an image, then asks for one change: {changes}. Then the user changes their mind and asks in their own words to "
+               "go back to how it was. The assistant draws a third time: its third description is the first description again, word for word."),
+    "helpful": ("The user asks about: {helpful}. This has nothing to do with images. The assistant answers directly and usefully, with "
+                "real, sensible, specific content, in two to five sentences or a short list, and does not draw."),
     "mixed": ("Mix drawing with normal chat: {mix}. Answers about an image only use what its description says."),
     "no_draw": ("The user talks about images or art but does not want one generated ({topic}). The assistant answers "
                 "helpfully in plain text and does not draw."),
@@ -70,6 +79,11 @@ PLACES = ["a sunny meadow", "a city street", "a snowy yard", "a kitchen", "a gar
           "a living room", "a desert", "a riverbank", "a train station", "a park", "a hillside", "a small village", "an old barn", "a harbor", "a cafe", "a beach"]
 REQUEST_WORDS = {"draw", "paint", "sketch", "generate", "create", "make", "image", "picture", "photo", "please", "can", "could", "you", "me", "want", "like", "need", "would", "show", "hey", "hi",
                  "some", "that", "this", "it", "for", "to", "i", "id", "love", "see", "something", "get", "be", "who", "which", "are", "has", "have", "their", "his", "her", "there", "so", "very", "thanks", "looks", "look", "just", "one", "scene"}
+COLORS = ["red", "blue", "green", "yellow", "black", "white", "orange", "purple", "pink", "brown", "gray", "silver", "gold"]
+THINGS = ["car", "dress", "hat", "sunglasses", "umbrella", "house", "door", "bicycle", "boat", "shirt", "scarf", "balloon", "chair", "cat", "flower", "backpack", "kite", "sofa"]
+HELPFUL = ["suggesting good names for a pet, a band, a shop or a project", "a short list of ideas for a weekend or a gift", "practical advice about cooking, studying or sleep",
+           "explaining a simple science or history question", "comparing two everyday options and recommending one", "a friendly greeting and small talk, then a simple question",
+           "fixing a small everyday problem at home", "planning a short trip", "explaining a word or a saying", "writing a short message, such as a thank-you note"]
 NEW_SCENE = "the user wants a completely new picture of something else"
 CHANGES = ["a different color", "a different time of day", "different weather", "a different background", "another location",
            "one more object added", "an object removed", "a different number of the subject", "the subject replaced by another",
@@ -98,6 +112,8 @@ Rules:
   14 to 35 words describing only what is visible: the subject, what it does, the setting or background, colors, lighting.
   No camera jargon or quality tags.
 - Other assistant turns have only "content" and no "image_prompt".
+- A description has only the subject the user asked for: no extra animals or people they did not ask for.
+- A drawing reply is at most 15 words and only states what the description actually says.
 - Never mention being an AI or a language model. Never apologize for being unable to draw.
 Return JSON:
 {{"messages": [{{"role": "user", "content": "..."}}, {{"role": "assistant", "content": "...", "image_prompt": "..."}}]}}
@@ -139,6 +155,21 @@ def shared_words(previous, new):
     words = lambda text: set(re.findall(r"[a-z]+", text.lower())) - {"a", "an", "the", "and", "of", "with", "in", "on", "at", "under", "by", "its", "is"}
     a, b = words(previous), words(new)
     return len(a & b) / max(1, len(a))
+
+
+def keep_cached(kind, messages):
+    """conversations generated under earlier rules: a reply that goes beyond its description teaches inventing things, a bare
+    subject must stay alone"""
+    for m in messages:
+        if m["role"] == "assistant" and isinstance(m["content"], list):
+            if kind == "vague" and len(m["content"][0]["content"].split()) > 18:
+                return False
+            if kind == "bare":
+                words = set(re.findall(r"[a-z]+", m["content"][1]["content"].lower()))
+                subject = re.findall(r"[a-z]+", messages[0]["content"].lower())
+                if {w.split()[-1] for w in SUBJECTS} & words - set(subject) & {"cat", "dog", "bird", "horse", "person", "rabbit", "fish", "lion", "butterfly", "dragon"}:
+                    return False
+    return True
 
 
 def validate(payload, out):
@@ -184,6 +215,15 @@ def validate(payload, out):
         asked = set(re.findall(r"[a-z]+", msgs[0]["content"].lower())) - REQUEST_WORDS - {"a", "an", "the", "and", "of", "with", "in", "on", "at", "under", "by", "its", "is"}
         if len(asked) < 4 or shared_words(" ".join(asked), prompts[0]) < 0.8:
             return None, "faithful lost what the user asked for"
+    if kind == "replace":
+        old, new = payload["old"], payload["new"]
+        words = [set(re.findall(r"[a-z]+", p.lower())) for p in prompts]
+        if len(prompts) != 2 or old not in words[0] or old in words[1] or new not in words[1] or shared_words(prompts[0], prompts[1]) < 0.7:
+            return None, "replace must swap the old value for the new"
+    if kind == "revert" and (len(prompts) != 3 or shared_words(prompts[0], prompts[2]) < 0.85 or shared_words(prompts[2], prompts[0]) < 0.85 or prompts[1] == prompts[0]):
+        return None, "revert must return to the first description"
+    if kind == "helpful" and (prompts or len(msgs) != 2 and len(msgs) != 4):
+        return None, "helpful does not draw"
     if kind == "edit2":
         if payload["implicit"] and any(m["role"] == "user" and SAYS_KEEP.search(m["content"]) for m in converted):
             return None, "the user said that the rest stays"
@@ -199,6 +239,9 @@ def main():
     parser.add_argument("--per_kind", type=int, default=2000, help="DeepSeek conversations of each kind, 0 = no API calls")
     parser.add_argument("--templates", type=int, default=8000, help="few: they teach to repeat the request, not to describe")
     parser.add_argument("--new_per_kind", type=int, default=1700, help="conversations of each of vague, bare, faithful")
+    parser.add_argument("--replace", type=int, default=2000)
+    parser.add_argument("--revert", type=int, default=1500)
+    parser.add_argument("--helpful", type=int, default=4000)
     parser.add_argument("--dst", default=str(SFT_T2I_CHAT))
     parser.add_argument("--cache", default=None)
     args = parser.parse_args()
@@ -208,15 +251,17 @@ def main():
     rows = [template_row(c, rng) for c in captions[:args.templates]]
     jobs = []
     for kind in KINDS:
-        for k in range(args.new_per_kind if kind in ("vague", "bare", "faithful") else args.per_kind):
+        counts = {"vague": args.new_per_kind, "bare": args.new_per_kind, "faithful": args.new_per_kind, "replace": args.replace, "revert": args.revert, "helpful": args.helpful}
+        for k in range(counts.get(kind, args.per_kind)):
             edits = rng.randint(1, 3)
             new_scene = kind == "edit2" and rng.random() < 0.07
             changes = ", ".join(rng.sample(CHANGES, edits - 1) + [NEW_SCENE] if new_scene else rng.sample(CHANGES, edits))
             implicit = rng.random() < 0.85
             subject = rng.choice(SUBJECTS)
             scenario = KINDS[kind].format(edits=edits, changes=changes, keep=IMPLICIT if implicit else EXPLICIT, mix=rng.choice(MIXES), topic=rng.choice(NO_DRAW),
-                                          vague=rng.choice(VAGUE), subject=subject, look=rng.choice(LOOKS), place=rng.choice(PLACES))
-            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene, "implicit": implicit, "subject": subject}))
+                                          vague=rng.choice(VAGUE), subject=subject, look=rng.choice(LOOKS), place=rng.choice(PLACES),
+                                          old=(old := rng.choice(COLORS)), new=(new := rng.choice([c for c in COLORS if c != old])), thing=rng.choice(THINGS), helpful=rng.choice(HELPFUL))
+            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene, "implicit": implicit, "subject": subject, "old": old, "new": new}))
     stats = {"template": len(rows)}
     if jobs:
         def make_messages(p):
@@ -224,7 +269,7 @@ def main():
 
         results = run_jobs(jobs, make_messages, validate, args.cache or args.dst + ".cache.jsonl", temperature=1.0)
         for job_id, p in jobs:
-            if not is_failed(results[job_id]):
+            if not is_failed(results[job_id]) and keep_cached(p["kind"], results[job_id]):
                 rows.append({"messages": results[job_id], "metadata": {"source": "t2i_chat", "kind": p["kind"]}})
                 stats[p["kind"]] = stats.get(p["kind"], 0) + 1
     os.makedirs(os.path.dirname(os.path.abspath(args.dst)), exist_ok=True)

@@ -51,6 +51,15 @@ FAITHFUL = [("Draw a cat wearing sunglasses.", ["cat", "sunglasses"]), ("Draw a 
             ("Draw a boy holding a yellow kite on a beach.", ["boy", "yellow", "kite", "beach"]), ("Draw a whale next to a tiny boat.", ["whale", "tiny", "boat"]),
             ("Draw an astronaut riding a horse on the moon.", ["astronaut", "horse", "moon"]), ("Draw a cat in a kitchen.", ["cat", "kitchen"]), ("Draw a rainy street in Tokyo at night.", ["rain", "street", "tokyo", "night"]),
             ("Draw a robot playing guitar on a stage.", ["robot", "guitar", "stage"]), ("Draw a chef in a white hat cooking pasta.", ["chef", "white", "hat", "pasta"])]
+# a replaced attribute must leave the description: (request, change, word that must appear, word that must be gone)
+REPLACE = [("Draw a cat wearing black sunglasses on a beach.", "make the sunglasses red", "red", "black"), ("Draw a green car on a road.", "make the car yellow", "yellow", "green"),
+           ("Draw a girl in a blue dress in a garden.", "make the dress white", "white", "blue"), ("Draw a white house on a hill.", "paint the house pink", "pink", "white"),
+           ("Draw a brown horse in a field.", "make it gray", "gray", "brown"), ("Draw a red umbrella on a beach.", "make the umbrella purple", "purple", "red")]
+REVERT = [("Draw a red fox in a forest.", "change the fox to a white wolf", "actually go back to the fox", "fox", "wolf"), ("Draw a cabin in the snow.", "make it a beach house", "no, go back to the cabin", "cabin", "beach"),
+          ("Draw a dog on a sofa.", "make it a cat", "I liked the dog better, change it back", "dog", "cat"), ("Draw a boat on a lake.", "make it a submarine", "undo that", "boat", "submarine")]
+HELPFUL = [("What's a good name for a golden retriever?", ["buddy", "max", "sunny", "goldie", "honey", "bailey", "charlie", "cooper", "daisy", "luna", "bella", "rusty", "amber", "duke", "sandy", "maple", "ginger"]),
+           ("What are the three primary colors?", ["red", "blue"]), ("How many days are in a leap year?", ["366"]), ("What should I pack for a beach trip? Give me a few items.", ["sunscreen", "towel"]),
+           ("What does a bee make?", ["honey"]), ("What is the largest planet in our solar system?", ["jupiter"])]
 BARE = ["draw a cat", "draw a dog", "draw a house", "draw a car", "draw a bird", "draw a flower"]
 
 parser = argparse.ArgumentParser(description="behaviour of conversational image generation")
@@ -120,8 +129,39 @@ for text in BARE:  # with the page's sampling
     prompts = {chat.reply([{"role": "user", "content": text}])[1] for _ in range(5)}
     distinct.append(len(prompts) / 5)
     print(f"[bare] {text}: " + " || ".join(str(p)[:70] for p in list(prompts)[:3]))
+replaced = 0
+for first, change, new_word, old_word in REPLACE:
+    messages = [{"role": "user", "content": first}]
+    reply, prompt = ask(messages)
+    if prompt is None:
+        reply = {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": first}]}
+    messages += [reply, {"role": "user", "content": change}]
+    _, new = ask(messages)
+    words = set(re.findall(r"[a-z]+", new.lower())) if new else set()
+    ok = new_word in words and old_word not in words
+    replaced += ok
+    print(f"[swap {'ok ' if ok else 'NO '}] {change!r} -> {new}")
+reverted = 0
+for first, change, back, want, gone in REVERT:
+    messages = [{"role": "user", "content": first}]
+    for text in (change, back):
+        reply, prompt = ask(messages)
+        if prompt is None:
+            reply = {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": first}]}
+        messages += [reply, {"role": "user", "content": text}]
+    _, new = ask(messages)
+    ok = bool(new) and want in new.lower() and gone not in new.lower()
+    reverted += ok
+    print(f"[back {'ok ' if ok else 'NO '}] {back!r} -> {new}")
+helpful = 0
+for text, any_of in HELPFUL:
+    reply, prompt = ask([{"role": "user", "content": text}])
+    said = " ".join(p["content"] for p in reply["content"] if p["type"] == "text").lower()
+    ok = prompt is None and any(w in said for w in any_of)
+    helpful += ok
+    print(f"[help {'ok ' if ok else 'NO '}] {text} -> {said[:170]}")
 lengths = [len(p.split()) for p in first_prompts]
-results = {"vague_changed": vague_changed / len(VAGUE), "vague_correct": vague_ok / len(VAGUE), "faithful": faithful / len(FAITHFUL), "bare_distinct": sum(distinct) / len(distinct),
+results = {"replace": replaced / len(REPLACE), "revert": reverted / len(REVERT), "helpful": helpful / len(HELPFUL), "vague_changed": vague_changed / len(VAGUE), "vague_correct": vague_ok / len(VAGUE), "faithful": faithful / len(FAITHFUL), "bare_distinct": sum(distinct) / len(distinct),
            "mean_first_description_words": sum(lengths) / max(1, len(lengths)), "words_retained_by_edit": sum(retained) / max(1, len(retained)),
            "draws_when_asked": drew / len(DRAW), "stays_in_text": quiet / len(NO_DRAW), "edit_draws_again": edit_drew / len(EDIT), "edit_correct": edit_ok / len(EDIT)}
 print(results)

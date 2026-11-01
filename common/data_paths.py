@@ -42,6 +42,7 @@ RAW_T2I = RAW_ROOT / "t2i"
 T2I_RAW_VQ = RAW_T2I / "vq256"                    # caption + LlamaGen VQ-16 tokens of 256x256 images (text-to-image-2M)
 T2I_VQ_MODEL = RAW_T2I / "llamagen-vq"            # the VQ decoder
 T2I_DATA = PROCESSED_ROOT / "t2i_en256"           # English captions only, shuffled shards
+IMAGE_BACKEND = RAW_T2I / "z-image-turbo"         # the open-source model that draws in the conversation
 
 RAW_EVAL = RAW_ROOT / "eval"
 EVAL_BUNDLE = RAW_EVAL / "eval_bundle"  # CORE (DCLM)

@@ -51,6 +51,7 @@ SFT_IDENTITY = RAW_CUSTOM / "identity_conversations_en_d20.jsonl"
 # datagen/ 用 DeepSeek 合成的数据
 SFT_IDENTITY_QA = RAW_CUSTOM / "identity_qa_d20.jsonl"  # 短的身份问答（你是谁 / 你是 ChatGPT 吗）
 SFT_TOOLCALL_SYNTH = RAW_CUSTOM / "toolcall_synth.jsonl"  # 参数纠错重试 / 缺参数先追问 / 连续调用 / 不该调用
+SFT_T2I_CHAT = RAW_CUSTOM / "t2i_chat.jsonl"  # 对话式生图：什么时候画、怎么写描述、连续改图、不该画
 SFT_T2A = PROCESSED_ROOT / "sft" / "t2a"
 SFT_A2A = PROCESSED_ROOT / "sft" / "a2a"
 SFT_I2T = PROCESSED_ROOT / "sft" / "i2t"

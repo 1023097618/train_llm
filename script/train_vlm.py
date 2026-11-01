@@ -45,6 +45,8 @@ parser.add_argument("--data_dir", type=str, default=str(VLM_DATA))
 parser.add_argument("--caption_weight", type=float, default=None, help="sampling weight of captions (align 1, sft 0.3)")
 parser.add_argument("--instruct_weight", type=float, default=None, help="sampling weight of instructions (align 0, sft 0.5)")
 parser.add_argument("--text_weight", type=float, default=None, help="sampling weight of the text SFT replay (align 0, sft 0.2)")
+parser.add_argument("--t2i_chat_path", type=str, default="", help="sft: jsonl of drawing conversations (datagen/synth_t2i_chat.py), added to the text replay")
+parser.add_argument("--t2i_chat_epochs", type=int, default=2, help="times the drawing conversations appear in the text replay")
 parser.add_argument("--epochs", type=float, default=1.0, help="passes over the main data of the stage (align: captions, sft: instructions)")
 parser.add_argument("--max_steps", type=int, default=0)
 parser.add_argument("--device_batch_size", type=int, default=2)
@@ -119,8 +121,10 @@ weights = {"caption": args.caption_weight, "instruct": args.instruct_weight}
 image_sources = [(name, files[name], weights[name]) for name in files if weights[name] > 0]
 text_mixture = None
 if args.text_weight > 0:
-    text_mixture = sftdata.TaskMixture([sftdata.SmolTalk("train"), sftdata.MMLU("auxiliary_train"), sftdata.GSM8K("train"),
-                                        sftdata.HermesFunctionCalling()])
+    text_tasks = [sftdata.SmolTalk("train"), sftdata.MMLU("auxiliary_train"), sftdata.GSM8K("train"), sftdata.HermesFunctionCalling()]
+    if args.t2i_chat_path:
+        text_tasks += [sftdata.CustomJSON(args.t2i_chat_path)] * args.t2i_chat_epochs
+    text_mixture = sftdata.TaskMixture(text_tasks)
 resume = None
 if args.resume:
     resume = torch.load(args.resume, map_location="cpu", weights_only=False)

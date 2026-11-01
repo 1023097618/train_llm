@@ -30,6 +30,9 @@ REQUESTS = ["Draw {c}", "Draw me {c}", "Please draw {c}", "Can you draw {c}?", "
             "Create an image of {c}", "Create a picture of {c}", "Make an image of {c}", "Make me a picture of {c}",
             "I want a picture of {c}", "I'd like an image of {c}", "Show me a picture of {c}", "Show me {c}",
             "Paint {c}", "Sketch {c}", "Picture of {c}", "image of {c}", "draw {c}", "generate {c}"]
+FULL_SENTENCE_REQUESTS = ["Draw this: {c}", "Generate an image: {c}", "Image prompt: {c}", "Make a picture: {c}",
+                          "Can you draw this? {c}", "{c}. Draw that please.", "Please generate this scene: {c}"]
+NOUN_PHRASE = re.compile(r"(?i)(a|an|the|two|three|four|five|several|many|some)\s")
 REPLIES = ["Here you go.", "Sure, here it is.", "Here is the image.", "Sure.", "Of course.", "Here's your picture.",
            "Okay, drawing it now.", "Here's what I came up with."]
 
@@ -89,7 +92,9 @@ def template_row(caption, rng):
     subject = caption.rstrip(".!? ")
     if not re.match(r"[A-Z]{2}|[A-Z][a-z]+ [A-Z]", subject):  # keeps names and acronyms capitalized
         subject = subject[0].lower() + subject[1:]
-    return {"messages": [{"role": "user", "content": rng.choice(REQUESTS).format(c=subject)},
+    # "picture of ..." only reads well in front of something like "a red car", not "in a forest, a man walks"
+    requests = REQUESTS if NOUN_PHRASE.match(subject) else FULL_SENTENCE_REQUESTS
+    return {"messages": [{"role": "user", "content": rng.choice(requests).format(c=subject)},
                          drawing_turn(rng.choice(REPLIES), caption)],
             "metadata": {"source": "t2i_chat", "kind": "template"}}
 

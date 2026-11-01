@@ -220,7 +220,7 @@ def save(step, val=None):
     opt_state = common.to_cpu(optimiz.state_dict())
     states = [None] * world_size if is_main else None
     loaders = [None] * world_size if is_main else None
-    if ddp:
+    if world_size > 1:  # gather_object pickles onto the GPU: one process has the whole optimizer state, 8 GB at d24
         dist.gather_object(opt_state, states, dst=0)
         dist.gather_object(loader_state, loaders, dst=0)
     else:

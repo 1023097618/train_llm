@@ -1,9 +1,10 @@
 """A chat page for conversational image generation. Listens on 127.0.0.1 only: the server account is shared, so open it through
 a tunnel from your own computer, then browse http://localhost:8765
+The open-source model draws (inference/image_backend.py); --decoder_ckpt uses our own decoder instead.
 
 usage:
-CUDA_VISIBLE_DEVICES=1 python -m script.chat_t2i_web --chat_ckpt=weight/d24/chat_t2i.ckpt --tokenizer_path=weight/d24/tokenizer.pkl \
-    --decoder_ckpt=weight/d24/imagegen_v2.ckpt
+PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 python -m script.chat_t2i_web --chat_ckpt=weight/d24/chat_t2i.ckpt \
+    --tokenizer_path=weight/d24/tokenizer.pkl
 ssh -L 8765:127.0.0.1:8765 train-server
 """
 import argparse
@@ -23,11 +24,16 @@ from inference.chat_t2i import ChatT2I
 parser = argparse.ArgumentParser(description="chat page for conversational image generation")
 parser.add_argument("--chat_ckpt", type=str, required=True)
 parser.add_argument("--tokenizer_path", type=str, required=True)
-parser.add_argument("--decoder_ckpt", type=str, required=True)
+parser.add_argument("--decoder_ckpt", type=str, default="", help="our own decoder instead of the open-source model")
 parser.add_argument("--port", type=int, default=8765)
 args = parser.parse_args()
 
-chat = ChatT2I(args.chat_ckpt, args.tokenizer_path, args.decoder_ckpt)
+chat = ChatT2I(args.chat_ckpt, args.tokenizer_path, args.decoder_ckpt or None)
+if args.decoder_ckpt:
+    draw = chat.draw
+else:
+    from inference.image_backend import ZImageBackend
+    draw = ZImageBackend().draw
 lock = threading.Lock()  # one conversation turn on the GPU at a time
 app = FastAPI()
 
@@ -40,7 +46,7 @@ header{display:flex;justify-content:space-between;align-items:center;padding:12p
 #log{flex:1;overflow-y:auto;padding:16px;max-width:760px;width:100%;margin:0 auto}
 .m{margin:0 0 14px;padding:10px 14px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;width:fit-content;max-width:88%}
 .u{background:var(--accent);color:var(--bg);margin-left:auto}.a{background:var(--card);border:1px solid var(--line)}
-.a img{display:block;width:256px;max-width:100%;border-radius:6px;margin-top:8px}.a small{display:block;color:var(--muted);margin-top:6px}
+.a img{display:block;width:512px;max-width:100%;border-radius:6px;margin-top:8px}.a small{display:block;color:var(--muted);margin-top:6px}
 form{display:flex;gap:8px;padding:12px 16px;max-width:760px;width:100%;margin:0 auto}
 input{flex:1;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit}
 button{padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit;cursor:pointer}
@@ -79,7 +85,7 @@ def turn(request: Turn):
         image = None
         if prompt:
             buffer = io.BytesIO()
-            Image.fromarray(chat.draw(prompt, seed=request.seed or random.randrange(10 ** 6))).save(buffer, "PNG")
+            Image.fromarray(draw(prompt, seed=request.seed or random.randrange(10 ** 6))).save(buffer, "PNG")
             image = base64.b64encode(buffer.getvalue()).decode()
     text = next((p["content"] for p in message["content"] if p["type"] == "text"), "")
     return {"message": message, "text": text, "prompt": prompt, "image": image}

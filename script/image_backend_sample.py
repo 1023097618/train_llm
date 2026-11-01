@@ -13,7 +13,7 @@ import time
 import torch
 from PIL import Image
 
-from inference.image_backend import ZImageBackend
+from inference.image_backend import FluxBackend, ZImageBackend
 
 PROMPTS = ["An orange cat sitting on a stone wall in the sunlight.",
            "A red sports car parked on a mountain road at sunset.",
@@ -25,14 +25,16 @@ PROMPTS = ["An orange cat sitting on a stone wall in the sunlight.",
            "A portrait of an old man with a gray beard."]
 
 parser = argparse.ArgumentParser(description="samples of the open-source image model")
-parser.add_argument("--out_path", type=str, default="out/image_backend/z_image_turbo.png")
+parser.add_argument("--backend", choices=("z-image", "flux"), default="z-image")
+parser.add_argument("--out_path", type=str, default="")
 parser.add_argument("--seeds", type=int, default=4)
 parser.add_argument("--size", type=int, default=768)
 parser.add_argument("--cell", type=int, default=256, help="size of one picture on the sheet")
 args = parser.parse_args()
+args.out_path = args.out_path or f"out/image_backend/{args.backend}.png"
 
 t0 = time.time()
-backend = ZImageBackend()
+backend = ZImageBackend() if args.backend == "z-image" else FluxBackend()
 print(f"loaded in {time.time() - t0:.0f}s, GPU memory {torch.cuda.memory_allocated() / 2**30:.1f} GB")
 sheet = Image.new("RGB", (args.cell * args.seeds, args.cell * len(PROMPTS)), "white")
 times = []

@@ -1,8 +1,9 @@
 """Conversations that teach the chat model when to draw and how to write the description for the image decoder.
 
 - templates: a plain request around a caption of the image generation data, the description repeats it (no API)
-- request:   a natural, often vague request, the assistant writes a concrete description
-- edit:      the user keeps changing the image, the assistant rewrites the whole description each time
+- request2:  a natural, often vague request, the assistant writes a concrete description that always has a setting
+- edit2:     the user keeps changing the image, usually without saying that the rest stays; the description is the previous
+             one with only the requested change, checked by the words the two have in common
 - mixed:     normal chat before or after drawing, questions about the image are answered from its description
 - no_draw:   talks about pictures or art without asking for one, the assistant answers and does not draw
 
@@ -10,8 +11,8 @@ The description goes into a {"type": "t2i_prompt"} part, rendered as <|visual pr
 full description, not <|edit prompt|>: the decoder only reads text and cannot look at the previous image.
 
 usage:
-python -m datagen.synth_t2i_chat --per_kind=0 --templates=60000
-DEEPSEEK_API_KEY=... python -m datagen.synth_t2i_chat --per_kind=2000 --templates=60000
+python -m datagen.synth_t2i_chat --per_kind=0
+DEEPSEEK_API_KEY=... python -m datagen.synth_t2i_chat --per_kind=3000
 """
 import argparse
 import glob
@@ -37,19 +38,24 @@ REPLIES = ["Here you go.", "Sure, here it is.", "Here is the image.", "Sure.", "
            "Okay, drawing it now.", "Here's what I came up with."]
 
 KINDS = {
-    "request": ("The user asks for one image in natural words, often vaguely (for example only a subject or a mood). "
-                "The assistant draws it right away, without asking questions, choosing sensible concrete details."),
-    "edit": ("The user asks for an image, then asks for {edits} changes one after the other in their own words, each referring "
-             "to the previous image. The kinds of change, in this order: {changes}. Each assistant turn draws again; its "
-             "description is complete on its own and keeps everything the user did not ask to change."),
+    "request2": ("The user asks for one image in natural words, often vaguely (for example only a subject or a mood). The "
+                 "assistant draws it right away, without asking questions. Even for a bare subject like \"a cat\", its "
+                 "description names a specific subject, what it is doing, a concrete setting or background, and the light."),
+    "edit2": ("The user asks for an image, then asks for {edits} changes one after the other in their own words, each referring "
+              "to the previous image. The kinds of change, in this order: {changes}. {keep} Each assistant turn draws again: "
+              "copy the previous description word for word and replace only the words the change is about. The setting and "
+              "every detail the user did not mention stay exactly the same, unless the user asks for a new scene."),
     "mixed": ("Mix drawing with normal chat: {mix}. Answers about an image only use what its description says."),
     "no_draw": ("The user talks about images or art but does not want one generated ({topic}). The assistant answers "
                 "helpfully in plain text and does not draw."),
 }
+NEW_SCENE = "the user wants a completely new picture of something else"
 CHANGES = ["a different color", "a different time of day", "different weather", "a different background", "another location",
            "one more object added", "an object removed", "a different number of the subject", "the subject replaced by another",
            "a different season", "a different mood", "a different art style", "a different pose or action", "a clothing change",
            "a size change of something", "the lighting changed"]
+KEEP = ["The user just says what to change, the way people do, and never says that the rest should stay."] * 5 + [
+    "In one of the requests the user also says that something should stay as it is, in their own words."]
 MIXES = ["the user chats about a topic first, then asks for a related image",
          "the assistant draws, then the user asks what is in the picture",
          "the assistant draws, then the user asks a general question about the subject",
@@ -67,7 +73,8 @@ Rules:
 - The assistant speaks about "the image" or "the picture"; the word "description" never appears in its "content".
 - Vary the wording of the "content" of drawing turns; do not always say "Here you go".
 - An assistant turn that draws has a very short "content" (at most one short sentence) and an "image_prompt": one sentence of
-  8 to 25 words describing only what is visible (subject, setting, colors, lighting). No camera jargon or quality tags.
+  14 to 35 words describing only what is visible: the subject, what it does, the setting or background, colors, lighting.
+  No camera jargon or quality tags.
 - Other assistant turns have only "content" and no "image_prompt".
 - Never mention being an AI or a language model. Never apologize for being unable to draw.
 Return JSON:
@@ -105,6 +112,13 @@ def template_row(caption, rng):
             "metadata": {"source": "t2i_chat", "kind": "template"}}
 
 
+def shared_words(previous, new):
+    """the share of the previous description's words still in the new one"""
+    words = lambda text: set(re.findall(r"[a-z]+", text.lower())) - {"a", "an", "the", "and", "of", "with", "in", "on", "at", "under", "by", "its", "is"}
+    a, b = words(previous), words(new)
+    return len(a & b) / max(1, len(a))
+
+
 def validate(payload, out):
     msgs = out.get("messages")
     if not isinstance(msgs, list) or len(msgs) < 2 or len(msgs) % 2:
@@ -118,7 +132,7 @@ def validate(payload, out):
         if role == "user" or not prompt:
             converted.append({"role": role, "content": text})
             continue
-        if not 5 <= len(prompt.split()) <= 35 or len(text.split()) > 20:
+        if not 10 <= len(prompt.split()) <= 45 or len(text.split()) > 20:
             return None, "length"
         prompts.append(prompt)
         converted.append(drawing_turn(text, prompt))
@@ -127,22 +141,25 @@ def validate(payload, out):
     kind = payload["kind"]
     if kind == "no_draw" and prompts:
         return None, "no_draw drew"
-    if kind == "request" and len(prompts) != 1:
+    if kind == "request2" and len(prompts) != 1:
         return None, "request must draw once"
     if kind == "mixed" and not prompts:
         return None, "mixed must draw"
     if kind != "no_draw" and any(m["role"] == "assistant" and isinstance(m["content"], str) and "description" in m["content"].lower()
                                  for m in converted):
         return None, "mentions the description"
-    if kind == "edit" and (len(prompts) < 2 or len(set(prompts)) < len(prompts) or len(prompts) != len(msgs) // 2):
-        return None, "edit must draw a new description each turn"
+    if kind == "edit2":
+        if len(prompts) < 2 or len(set(prompts)) < len(prompts) or len(prompts) != len(msgs) // 2:
+            return None, "edit must draw a new description each turn"
+        if not payload["new_scene"] and min(shared_words(a, b) for a, b in zip(prompts, prompts[1:])) < 0.6:
+            return None, "edit lost too much of the previous description"
     return converted, None
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--per_kind", type=int, default=2000, help="DeepSeek conversations of each kind, 0 = no API calls")
-    parser.add_argument("--templates", type=int, default=60000)
+    parser.add_argument("--templates", type=int, default=8000, help="few: they teach to repeat the request, not to describe")
     parser.add_argument("--dst", default=str(SFT_T2I_CHAT))
     parser.add_argument("--cache", default=None)
     args = parser.parse_args()
@@ -154,9 +171,10 @@ def main():
     for kind in KINDS:
         for k in range(args.per_kind):
             edits = rng.randint(1, 3)
-            scenario = KINDS[kind].format(edits=edits, changes=", ".join(rng.sample(CHANGES, edits)), mix=rng.choice(MIXES),
-                                          topic=rng.choice(NO_DRAW))
-            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions)}))
+            new_scene = kind == "edit2" and rng.random() < 0.07
+            changes = ", ".join(rng.sample(CHANGES, edits - 1) + [NEW_SCENE] if new_scene else rng.sample(CHANGES, edits))
+            scenario = KINDS[kind].format(edits=edits, changes=changes, keep=rng.choice(KEEP), mix=rng.choice(MIXES), topic=rng.choice(NO_DRAW))
+            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene}))
     stats = {"template": len(rows)}
     if jobs:
         def make_messages(p):

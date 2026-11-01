@@ -4,7 +4,7 @@
 - request2:  a natural, often vague request, the assistant writes a concrete description that always has a setting
 - edit2:     the user keeps changing the image, usually without saying that the rest stays; the description is the previous
              one with only the requested change, checked by the words the two have in common
-- vague:     the user asks for a vague change ("cuter", "more dramatic"), the description changes in concrete visible ways
+- vague2:    the user asks for a vague change ("cuter", "more dramatic"), the description changes in concrete visible ways
 - bare:      only a subject is asked for; each conversation is given another look and place, so the first picture is not always the same
 - faithful:  the request has specific details, all of which must reach the description
 - replace:   the user changes one attribute; the old value must leave the description, not stand next to the new one
@@ -51,9 +51,9 @@ KINDS = {
               "to the previous image. The kinds of change, in this order: {changes}. {keep} Each assistant turn draws again: "
               "copy the previous description word for word and replace only the words the change is about. The setting and "
               "every detail the user did not mention stay exactly the same, unless the user asks for a new scene."),
-    "vague": ("The user asks for an image, then asks for a vague or subjective change in their own words: {vague}. The assistant "
+    "vague2": ("The user asks for an image, then asks for a vague or subjective change in their own words: {vague}. The assistant "
               "decides what that means visibly and draws again: the description is the previous one, setting included, with a few "
-              "concrete new visible details that achieve it. Its short reply says what actually changed."),
+              "concrete new visible details that achieve it. Its reply says in at most 15 words what actually changed."),
     "bare": ("The user asks for a picture of {subject} and gives no other detail. The assistant draws it right away. Its "
              "description shows {subject} in a look and place that suit it and read naturally. Take \"{look}\" and \"{place}\" as inspiration, "
              "and pick something similar if they do not make sense for it. It also says what the subject is doing and what the light is like."),
@@ -158,12 +158,9 @@ def shared_words(previous, new):
 
 
 def keep_cached(kind, messages):
-    """conversations generated under earlier rules: a reply that goes beyond its description teaches inventing things, a bare
-    subject must stay alone"""
+    """conversations generated under earlier rules: a bare subject must stay alone"""
     for m in messages:
         if m["role"] == "assistant" and isinstance(m["content"], list):
-            if kind == "vague" and len(m["content"][0]["content"].split()) > 18:
-                return False
             if kind == "bare":
                 words = set(re.findall(r"[a-z]+", m["content"][1]["content"].lower()))
                 subject = re.findall(r"[a-z]+", messages[0]["content"].lower())
@@ -185,7 +182,7 @@ def validate(payload, out):
         if role == "user" or not prompt:
             converted.append({"role": role, "content": text})
             continue
-        if not 10 <= len(prompt.split()) <= 45 or len(text.split()) > 35:
+        if not 10 <= len(prompt.split()) <= 45 or len(text.split()) > 20:
             return None, "length"
         prompts.append(prompt)
         converted.append(drawing_turn(text, prompt))
@@ -201,7 +198,7 @@ def validate(payload, out):
     if kind != "no_draw" and any(m["role"] == "assistant" and isinstance(m["content"], str) and "description" in m["content"].lower()
                                  for m in converted):
         return None, "mentions the description"
-    if kind == "vague":
+    if kind == "vague2":
         if len(prompts) < 2 or len(prompts) != len(msgs) // 2:
             return None, "vague must draw again"
         for a, b in zip(prompts, prompts[1:]):
@@ -251,7 +248,7 @@ def main():
     rows = [template_row(c, rng) for c in captions[:args.templates]]
     jobs = []
     for kind in KINDS:
-        counts = {"vague": args.new_per_kind, "bare": args.new_per_kind, "faithful": args.new_per_kind, "replace": args.replace, "revert": args.revert, "helpful": args.helpful}
+        counts = {"vague2": args.new_per_kind, "bare": args.new_per_kind, "faithful": args.new_per_kind, "replace": args.replace, "revert": args.revert, "helpful": args.helpful}
         for k in range(counts.get(kind, args.per_kind)):
             edits = rng.randint(1, 3)
             new_scene = kind == "edit2" and rng.random() < 0.07

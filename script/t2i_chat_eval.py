@@ -41,6 +41,18 @@ EDIT = [("Draw a red car on a beach.", "make it blue", ["blue"], ["car", "beach"
         ("Draw a white horse in a field at sunset.", "make it a black horse", ["black", "horse"], ["field", "sunset"], ["white"]),
         ("Draw a bowl of soup on a wooden table.", "add a spoon", ["spoon", "soup"], ["table", "wooden"], [])]
 
+# a vague change must change the description; the rest of it must stay
+VAGUE = [("Draw a dog on a sofa in a living room.", "make it cuter", ["sofa"]), ("Draw a house on a hill.", "make it scarier", ["house"]),
+         ("Draw a woman walking in a city at night.", "make it more elegant", ["woman"]), ("Draw a cat in a kitchen.", "make the cat more cute", ["kitchen"]),
+         ("Draw a car on a road.", "make it cooler", ["car"]), ("Draw a garden with a bench.", "make it more peaceful", ["bench"]),
+         ("Draw a castle by a lake.", "make it more dramatic", ["castle", "lake"]), ("Draw a bowl of soup on a table.", "make it look nicer", ["soup"])]
+# (request, words the first description must have)
+FAITHFUL = [("Draw a cat wearing sunglasses.", ["cat", "sunglasses"]), ("Draw a dog in a park.", ["dog", "park"]), ("Draw three red balloons above a green field.", ["three", "red", "balloon", "green", "field"]),
+            ("Draw a boy holding a yellow kite on a beach.", ["boy", "yellow", "kite", "beach"]), ("Draw a whale next to a tiny boat.", ["whale", "tiny", "boat"]),
+            ("Draw an astronaut riding a horse on the moon.", ["astronaut", "horse", "moon"]), ("Draw a cat in a kitchen.", ["cat", "kitchen"]), ("Draw a rainy street in Tokyo at night.", ["rain", "street", "tokyo", "night"]),
+            ("Draw a robot playing guitar on a stage.", ["robot", "guitar", "stage"]), ("Draw a chef in a white hat cooking pasta.", ["chef", "white", "hat", "pasta"])]
+BARE = ["draw a cat", "draw a dog", "draw a house", "draw a car", "draw a bird", "draw a flower"]
+
 parser = argparse.ArgumentParser(description="behaviour of conversational image generation")
 parser.add_argument("--ckpt_path", type=str, required=True)
 parser.add_argument("--tokenizer_path", type=str, required=True)
@@ -84,8 +96,33 @@ for first, change, need, keep, gone in EDIT:
     if new and prompt:
         retained.append(shared_words(prompt, new))
     print(f"[edit {'ok ' if ok else 'NO '}] {prompt} + {change!r} -> {new}")
+vague_changed = vague_ok = 0
+for first, change, keep in VAGUE:
+    messages = [{"role": "user", "content": first}]
+    reply, prompt = ask(messages)
+    if prompt is None:
+        reply, prompt = {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": first}]}, first
+    messages += [reply, {"role": "user", "content": change}]
+    _, new = ask(messages)
+    changed = bool(new) and len(set(re.findall(r"[a-z]+", new.lower())) - set(re.findall(r"[a-z]+", prompt.lower()))) >= 2
+    vague_changed += changed
+    ok = changed and all(w in new.lower() for w in keep)
+    vague_ok += ok
+    print(f"[vague {'ok ' if ok else 'NO '}] {prompt} + {change!r} -> {new}")
+faithful = 0
+for text, need in FAITHFUL:
+    _, prompt = ask([{"role": "user", "content": text}])
+    ok = bool(prompt) and all(w in prompt.lower() for w in need)
+    faithful += ok
+    print(f"[faith {'ok ' if ok else 'NO '}] {text} -> {prompt}")
+distinct = []
+for text in BARE:  # with the page's sampling
+    prompts = {chat.reply([{"role": "user", "content": text}])[1] for _ in range(5)}
+    distinct.append(len(prompts) / 5)
+    print(f"[bare] {text}: " + " || ".join(str(p)[:70] for p in list(prompts)[:3]))
 lengths = [len(p.split()) for p in first_prompts]
-results = {"mean_first_description_words": sum(lengths) / max(1, len(lengths)), "words_retained_by_edit": sum(retained) / max(1, len(retained)),
+results = {"vague_changed": vague_changed / len(VAGUE), "vague_correct": vague_ok / len(VAGUE), "faithful": faithful / len(FAITHFUL), "bare_distinct": sum(distinct) / len(distinct),
+           "mean_first_description_words": sum(lengths) / max(1, len(lengths)), "words_retained_by_edit": sum(retained) / max(1, len(retained)),
            "draws_when_asked": drew / len(DRAW), "stays_in_text": quiet / len(NO_DRAW), "edit_draws_again": edit_drew / len(EDIT), "edit_correct": edit_ok / len(EDIT)}
 print(results)
 path = write_report(args.report_dir or default_report_dir(args.ckpt_path), args.stage, {"ckpt": args.ckpt_path, "results": results})

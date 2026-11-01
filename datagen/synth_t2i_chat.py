@@ -4,6 +4,9 @@
 - request2:  a natural, often vague request, the assistant writes a concrete description that always has a setting
 - edit2:     the user keeps changing the image, usually without saying that the rest stays; the description is the previous
              one with only the requested change, checked by the words the two have in common
+- vague:     the user asks for a vague change ("cuter", "more dramatic"), the description changes in concrete visible ways
+- bare:      only a subject is asked for; each conversation is given another look and place, so the first picture is not always the same
+- faithful:  the request has specific details, all of which must reach the description
 - mixed:     normal chat before or after drawing, questions about the image are answered from its description
 - no_draw:   talks about pictures or art without asking for one, the assistant answers and does not draw
 
@@ -45,10 +48,27 @@ KINDS = {
               "to the previous image. The kinds of change, in this order: {changes}. {keep} Each assistant turn draws again: "
               "copy the previous description word for word and replace only the words the change is about. The setting and "
               "every detail the user did not mention stay exactly the same, unless the user asks for a new scene."),
+    "vague": ("The user asks for an image, then asks for a vague or subjective change in their own words: {vague}. The assistant "
+              "decides what that means visibly and draws again: the description is the previous one, setting included, with a few "
+              "concrete new visible details that achieve it. Its short reply says what actually changed."),
+    "bare": ("The user asks for a picture of {subject} and gives no other detail. The assistant draws it right away. Its "
+             "description shows {subject}, {look}, in {place}, and says what it is doing and what the light is like."),
+    "faithful": ("The user asks for one image and gives two to four specific details, such as what the subject wears or holds, "
+                 "colors, numbers, the action and the place. The assistant draws it right away. Its description contains every "
+                 "detail the user gave, in the user's words, and adds only a little light and setting."),
     "mixed": ("Mix drawing with normal chat: {mix}. Answers about an image only use what its description says."),
     "no_draw": ("The user talks about images or art but does not want one generated ({topic}). The assistant answers "
                 "helpfully in plain text and does not draw."),
 }
+VAGUE = ["cuter", "more dramatic", "more elegant", "scarier", "more fun", "more peaceful", "more realistic", "fancier", "more colorful",
+         "more modern", "older looking", "happier", "sadder", "more mysterious", "more romantic", "cooler", "nicer", "more cozy", "more epic", "less boring"]
+SUBJECTS = ["a cat", "a dog", "a bird", "a horse", "a car", "a house", "a tree", "a flower", "a robot", "a boat", "a mountain", "a city", "a person",
+            "a rabbit", "a fish", "a castle", "a bicycle", "a cake", "a dragon", "a forest", "a beach", "a lion", "a butterfly", "a train"]
+LOOKS = ["black", "white", "gray", "brown", "spotted", "striped", "golden", "very small", "very large", "old", "young", "blue", "red", "green", "pale cream", "dark", "silver", "patterned"]
+PLACES = ["a sunny meadow", "a city street", "a snowy yard", "a kitchen", "a garden", "a rocky shore", "a library", "a market", "a forest path", "a rooftop", "a farm",
+          "a living room", "a desert", "a riverbank", "a train station", "a park", "a hillside", "a small village", "an old barn", "a harbor", "a cafe", "a beach"]
+REQUEST_WORDS = {"draw", "paint", "sketch", "generate", "create", "make", "image", "picture", "photo", "please", "can", "could", "you", "me", "want", "like", "need", "would", "show", "hey", "hi",
+                 "some", "that", "this", "it", "for", "to", "i", "id", "love", "see", "something", "get", "be", "who", "which", "are", "has", "have", "their", "his", "her", "there", "so", "very", "thanks", "looks", "look", "just", "one", "scene"}
 NEW_SCENE = "the user wants a completely new picture of something else"
 CHANGES = ["a different color", "a different time of day", "different weather", "a different background", "another location",
            "one more object added", "an object removed", "a different number of the subject", "the subject replaced by another",
@@ -149,6 +169,20 @@ def validate(payload, out):
     if kind != "no_draw" and any(m["role"] == "assistant" and isinstance(m["content"], str) and "description" in m["content"].lower()
                                  for m in converted):
         return None, "mentions the description"
+    if kind == "vague":
+        if len(prompts) < 2 or len(prompts) != len(msgs) // 2:
+            return None, "vague must draw again"
+        for a, b in zip(prompts, prompts[1:]):
+            if shared_words(a, b) < 0.5 or len(set(re.findall(r"[a-z]+", b.lower())) - set(re.findall(r"[a-z]+", a.lower()))) < 3:
+                return None, "vague must keep the setting and add concrete details"
+    if kind == "bare" and (len(prompts) != 1 or payload["subject"].split()[-1] not in prompts[0].lower()):
+        return None, "bare must draw the subject"
+    if kind == "faithful":
+        if len(prompts) != 1:
+            return None, "faithful must draw once"
+        asked = set(re.findall(r"[a-z]+", msgs[0]["content"].lower())) - REQUEST_WORDS - {"a", "an", "the", "and", "of", "with", "in", "on", "at", "under", "by", "its", "is"}
+        if len(asked) < 4 or shared_words(" ".join(asked), prompts[0]) < 0.8:
+            return None, "faithful lost what the user asked for"
     if kind == "edit2":
         if payload["implicit"] and any(m["role"] == "user" and SAYS_KEEP.search(m["content"]) for m in converted):
             return None, "the user said that the rest stays"
@@ -163,6 +197,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--per_kind", type=int, default=2000, help="DeepSeek conversations of each kind, 0 = no API calls")
     parser.add_argument("--templates", type=int, default=8000, help="few: they teach to repeat the request, not to describe")
+    parser.add_argument("--new_per_kind", type=int, default=1700, help="conversations of each of vague, bare, faithful")
     parser.add_argument("--dst", default=str(SFT_T2I_CHAT))
     parser.add_argument("--cache", default=None)
     args = parser.parse_args()
@@ -172,13 +207,15 @@ def main():
     rows = [template_row(c, rng) for c in captions[:args.templates]]
     jobs = []
     for kind in KINDS:
-        for k in range(args.per_kind):
+        for k in range(args.new_per_kind if kind in ("vague", "bare", "faithful") else args.per_kind):
             edits = rng.randint(1, 3)
             new_scene = kind == "edit2" and rng.random() < 0.07
             changes = ", ".join(rng.sample(CHANGES, edits - 1) + [NEW_SCENE] if new_scene else rng.sample(CHANGES, edits))
             implicit = rng.random() < 0.85
-            scenario = KINDS[kind].format(edits=edits, changes=changes, keep=IMPLICIT if implicit else EXPLICIT, mix=rng.choice(MIXES), topic=rng.choice(NO_DRAW))
-            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene, "implicit": implicit}))
+            subject = rng.choice(SUBJECTS)
+            scenario = KINDS[kind].format(edits=edits, changes=changes, keep=IMPLICIT if implicit else EXPLICIT, mix=rng.choice(MIXES), topic=rng.choice(NO_DRAW),
+                                          vague=rng.choice(VAGUE), subject=subject, look=rng.choice(LOOKS), place=rng.choice(PLACES))
+            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene, "implicit": implicit, "subject": subject}))
     stats = {"template": len(rows)}
     if jobs:
         def make_messages(p):

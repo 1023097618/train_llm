@@ -62,8 +62,12 @@ class ChatT2I:
             if len(tokens) + max_new_tokens <= self.chat.config.seq_len or len(history) <= 1:
                 break
             history = history[2:]  # the oldest exchange goes first
-        sentence, _ = self.engine.generate_batch(tokens, 1, max_len=len(tokens) + max_new_tokens, max_new_token=max_new_tokens, k=top_k)
-        text, prompt = parse_reply(sentence[0][len(tokens):], special, self.tokeniz.decode)
+        previous = [p["content"] for m in history if isinstance(m["content"], list) for p in m["content"] if p["type"] == "t2i_prompt"]
+        for _ in range(3):  # a description repeated word for word draws the same picture while claiming a change
+            sentence, _ = self.engine.generate_batch(tokens, 1, max_len=len(tokens) + max_new_tokens, max_new_token=max_new_tokens, k=top_k)
+            text, prompt = parse_reply(sentence[0][len(tokens):], special, self.tokeniz.decode)
+            if top_k == 1 or not prompt or not previous or prompt != previous[-1]:
+                break
         content = [{"type": "text", "content": text}] if text else []
         if prompt:
             content.append({"type": "t2i_prompt", "content": prompt})

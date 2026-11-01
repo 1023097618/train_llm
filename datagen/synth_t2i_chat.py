@@ -39,13 +39,17 @@ REPLIES = ["Here you go.", "Sure, here it is.", "Here is the image.", "Sure.", "
 KINDS = {
     "request": ("The user asks for one image in natural words, often vaguely (for example only a subject or a mood). "
                 "The assistant draws it right away, without asking questions, choosing sensible concrete details."),
-    "edit": ("The user asks for an image, then asks for {edits} changes one after the other, each referring to the previous "
-             "image in natural words (\"make it darker\", \"now with two of them\", \"actually, a dog instead\"). Each assistant "
-             "turn draws again; its description is complete on its own and keeps everything the user did not ask to change."),
+    "edit": ("The user asks for an image, then asks for {edits} changes one after the other in their own words, each referring "
+             "to the previous image. The kinds of change, in this order: {changes}. Each assistant turn draws again; its "
+             "description is complete on its own and keeps everything the user did not ask to change."),
     "mixed": ("Mix drawing with normal chat: {mix}. Answers about an image only use what its description says."),
     "no_draw": ("The user talks about images or art but does not want one generated ({topic}). The assistant answers "
                 "helpfully in plain text and does not draw."),
 }
+CHANGES = ["a different color", "a different time of day", "different weather", "a different background", "another location",
+           "one more object added", "an object removed", "a different number of the subject", "the subject replaced by another",
+           "a different season", "a different mood", "a different art style", "a different pose or action", "a clothing change",
+           "a size change of something", "the lighting changed"]
 MIXES = ["the user chats about a topic first, then asks for a related image",
          "the assistant draws, then the user asks what is in the picture",
          "the assistant draws, then the user asks a general question about the subject",
@@ -59,7 +63,9 @@ PROMPT = """You write one training conversation for a small assistant model that
 Scenario: {scenario}
 For inspiration only, the subject may loosely relate to: "{seed}"
 Rules:
-- The user writes like a real person ({style}). English only.
+- The user writes like a real person ({style}); the assistant always writes in clear, normal sentences. English only.
+- The assistant speaks about "the image" or "the picture"; the word "description" never appears in its "content".
+- Vary the wording of the "content" of drawing turns; do not always say "Here you go".
 - An assistant turn that draws has a very short "content" (at most one short sentence) and an "image_prompt": one sentence of
   8 to 25 words describing only what is visible (subject, setting, colors, lighting). No camera jargon or quality tags.
 - Other assistant turns have only "content" and no "image_prompt".
@@ -125,6 +131,9 @@ def validate(payload, out):
         return None, "request must draw once"
     if kind == "mixed" and not prompts:
         return None, "mixed must draw"
+    if kind != "no_draw" and any(m["role"] == "assistant" and isinstance(m["content"], str) and "description" in m["content"].lower()
+                                 for m in converted):
+        return None, "mentions the description"
     if kind == "edit" and (len(prompts) < 2 or len(set(prompts)) < len(prompts) or len(prompts) != len(msgs) // 2):
         return None, "edit must draw a new description each turn"
     return converted, None
@@ -144,7 +153,9 @@ def main():
     jobs = []
     for kind in KINDS:
         for k in range(args.per_kind):
-            scenario = KINDS[kind].format(edits=rng.randint(1, 3), mix=rng.choice(MIXES), topic=rng.choice(NO_DRAW))
+            edits = rng.randint(1, 3)
+            scenario = KINDS[kind].format(edits=edits, changes=", ".join(rng.sample(CHANGES, edits)), mix=rng.choice(MIXES),
+                                          topic=rng.choice(NO_DRAW))
             jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions)}))
     stats = {"template": len(rows)}
     if jobs:

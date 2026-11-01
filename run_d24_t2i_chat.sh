@@ -23,8 +23,8 @@ EVAL_GPU=${GPUS%%,*}
 WEIGHT_DIR=weight/d24
 TOKENIZER=$WEIGHT_DIR/tokenizer.pkl
 BASE_CKPT=$WEIGHT_DIR/vlm_rl.ckpt
-CKPT=$WEIGHT_DIR/chat_t2i.ckpt
-REPORT=$WEIGHT_DIR/report_t2i_chat
+CKPT=$WEIGHT_DIR/chat_t2i_v2.ckpt
+REPORT=$WEIGHT_DIR/report_t2i_chat_v2
 mkdir -p "$REPORT" log
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # wandb: the server's direct connection gets 403, offline when the forwarded proxy is down
@@ -39,7 +39,7 @@ if [ ! -f "$CKPT.done" ]; then
     [ -f "$CKPT.state" ] && resume="--resume=$CKPT.state"
     CUDA_VISIBLE_DEVICES=$GPUS torchrun --standalone --nproc_per_node=$(echo "$GPUS" | tr ',' '\n' | wc -l) -m script.train_vlm --stage=sft \
         --ckpt_path=$BASE_CKPT --tokenizer_path=$TOKENIZER --save_ckpt_path=$CKPT $resume \
-        --t2i_chat_path=data/raw/custom/t2i_chat.jsonl --caption_weight=0.1 --instruct_weight=0.3 --text_weight=0.6 \
+        --t2i_chat_path=data/raw/custom/t2i_chat.jsonl --t2i_chat_epochs=6 --caption_weight=0.1 --instruct_weight=0.3 --text_weight=0.6 \
         --llm_lr_frac=0.07 --max_steps=800
     touch "$CKPT.done"
 fi

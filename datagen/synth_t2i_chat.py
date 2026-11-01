@@ -54,8 +54,9 @@ CHANGES = ["a different color", "a different time of day", "different weather", 
            "one more object added", "an object removed", "a different number of the subject", "the subject replaced by another",
            "a different season", "a different mood", "a different art style", "a different pose or action", "a clothing change",
            "a size change of something", "the lighting changed"]
-KEEP = ["The user just says what to change, the way people do, and never says that the rest should stay."] * 5 + [
-    "In one of the requests the user also says that something should stay as it is, in their own words."]
+IMPLICIT = "The user just says what to change, the way people do, and never says that the rest should stay."
+EXPLICIT = "In one of the requests the user also says that something should stay as it is, in their own words."
+SAYS_KEEP = re.compile(r"(?i)\b(keep|keeping|same|unchanged|stay|stays|as it is|as is|don't change|do not change|everything else|the rest)\b")
 MIXES = ["the user chats about a topic first, then asks for a related image",
          "the assistant draws, then the user asks what is in the picture",
          "the assistant draws, then the user asks a general question about the subject",
@@ -149,6 +150,8 @@ def validate(payload, out):
                                  for m in converted):
         return None, "mentions the description"
     if kind == "edit2":
+        if payload["implicit"] and any(m["role"] == "user" and SAYS_KEEP.search(m["content"]) for m in converted):
+            return None, "the user said that the rest stays"
         if len(prompts) < 2 or len(set(prompts)) < len(prompts) or len(prompts) != len(msgs) // 2:
             return None, "edit must draw a new description each turn"
         if not payload["new_scene"] and min(shared_words(a, b) for a, b in zip(prompts, prompts[1:])) < 0.6:
@@ -173,8 +176,9 @@ def main():
             edits = rng.randint(1, 3)
             new_scene = kind == "edit2" and rng.random() < 0.07
             changes = ", ".join(rng.sample(CHANGES, edits - 1) + [NEW_SCENE] if new_scene else rng.sample(CHANGES, edits))
-            scenario = KINDS[kind].format(edits=edits, changes=changes, keep=rng.choice(KEEP), mix=rng.choice(MIXES), topic=rng.choice(NO_DRAW))
-            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene}))
+            implicit = rng.random() < 0.85
+            scenario = KINDS[kind].format(edits=edits, changes=changes, keep=IMPLICIT if implicit else EXPLICIT, mix=rng.choice(MIXES), topic=rng.choice(NO_DRAW))
+            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene, "implicit": implicit}))
     stats = {"template": len(rows)}
     if jobs:
         def make_messages(p):

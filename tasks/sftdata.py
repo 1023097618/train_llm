@@ -404,8 +404,8 @@ class SFTDataset(BaseDataset):
             token_batch = torch.tensor(token_batch)
             mask_batch = torch.tensor(mask_batch)
             segment_batch = torch.tensor(segment_batch)
-            x = token_batch[:, :-1].contiguous()
-            y = token_batch[:, 1:].contiguous()
+            x = token_batch[:, :-1].clone()  # 只有一行时 contiguous() 不复制，x 和 y 会共用内存
+            y = token_batch[:, 1:].clone()
             y[mask_batch[:, :-1] == tokenizer.Ignored.YES] = -1
             segment_batch = segment_batch[:, :-1].contiguous()
             state_dict = {'worker': wid, 'epoch': epoch, 'cursor': cursor}

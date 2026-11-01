@@ -184,8 +184,8 @@ class VLMDataset(IterableDataset):
                 mask_batch.append(mask)
                 segment_batch.append(segment)
             token_batch, mask_batch = torch.tensor(token_batch), torch.tensor(mask_batch)
-            x = token_batch[:, :-1].contiguous()
-            y = token_batch[:, 1:].contiguous()
+            x = token_batch[:, :-1].clone()  # a one row batch: contiguous() would share memory with y
+            y = token_batch[:, 1:].clone()
             y[mask_batch[:, :-1] == tokenizer.Ignored.YES] = -1
             segments = torch.tensor(segment_batch)[:, :-1].contiguous()
             pixels = torch.cat(pixel_batch) if pixel_batch else torch.zeros((0, 3, self.image_size, self.image_size), dtype=torch.uint8)

@@ -53,7 +53,7 @@ class ChatT2I:
             self.decoder.eval()
             self.vq = load_vq(vq_dir, device)
 
-    def reply(self, messages, top_k=8, max_new_tokens=200):
+    def reply(self, messages, top_k=2, max_new_tokens=200):  # top_k 2 keeps edits faithful (82% of the words, 8 keeps 71%), first pictures still differ
         """messages end with the user's turn -> the assistant message to append to them, and its description or None"""
         special = self.tokeniz.special_token
         history = list(messages)

@@ -52,7 +52,8 @@ KINDS = {
               "decides what that means visibly and draws again: the description is the previous one, setting included, with a few "
               "concrete new visible details that achieve it. Its short reply says what actually changed."),
     "bare": ("The user asks for a picture of {subject} and gives no other detail. The assistant draws it right away. Its "
-             "description shows {subject}, {look}, in {place}, and says what it is doing and what the light is like."),
+             "description shows {subject} in a look and place that suit it and read naturally. Take \"{look}\" and \"{place}\" as inspiration, "
+             "and pick something similar if they do not make sense for it. It also says what the subject is doing and what the light is like."),
     "faithful": ("The user asks for one image and gives two to four specific details, such as what the subject wears or holds, "
                  "colors, numbers, the action and the place. The assistant draws it right away. Its description contains every "
                  "detail the user gave, in the user's words, and adds only a little light and setting."),
@@ -153,7 +154,7 @@ def validate(payload, out):
         if role == "user" or not prompt:
             converted.append({"role": role, "content": text})
             continue
-        if not 10 <= len(prompt.split()) <= 45 or len(text.split()) > 20:
+        if not 10 <= len(prompt.split()) <= 45 or len(text.split()) > 35:
             return None, "length"
         prompts.append(prompt)
         converted.append(drawing_turn(text, prompt))

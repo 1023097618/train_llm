@@ -39,7 +39,10 @@ EDIT = [("Draw a red car on a beach.", "make it blue", ["blue"], ["car", "beach"
         ("draw a cat in a kitchen", "make the cat more cute", ["cat", "kitchen"], [], []),
         ("Draw a man in a blue shirt standing in a library.", "give him a hat", ["hat", "blue", "library"], ["man"], []),
         ("Draw a white horse in a field at sunset.", "make it a black horse", ["black", "horse"], ["field", "sunset"], ["white"]),
-        ("Draw a bowl of soup on a wooden table.", "add a spoon", ["spoon", "soup"], ["table", "wooden"], [])]
+        ("Draw a bowl of soup on a wooden table.", "add a spoon", ["spoon", "soup"], ["table", "wooden"], []),
+        ("Draw a cozy cabin in the snow.", "make it night with northern lights", ["northern", "night"], ["cabin", "snow"], []),
+        ("Draw a lake with mountains behind it.", "add a rainbow", ["rainbow"], ["lake", "mountain"], []),
+        ("Draw a city street at dusk.", "add fireworks in the sky", ["firework"], ["street"], [])]
 
 # a vague change must change the description; the rest of it must stay
 VAGUE = [("Draw a dog on a sofa in a living room.", "make it cuter", ["sofa"]), ("Draw a house on a hill.", "make it scarier", ["house"]),
@@ -66,7 +69,7 @@ parser = argparse.ArgumentParser(description="behaviour of conversational image 
 parser.add_argument("--ckpt_path", type=str, required=True)
 parser.add_argument("--tokenizer_path", type=str, required=True)
 parser.add_argument("--stage", type=str, default="t2i_chat_behaviour")
-parser.add_argument("--top_k", type=int, default=1, help="1 is greedy; above it every case runs --repeats times, since sampling differs per run")
+parser.add_argument("--top_k", type=int, default=2, help="1 is greedy; above it every case runs --repeats times, since sampling differs per run")
 parser.add_argument("--repeats", type=int, default=3)
 parser.add_argument("--report_dir", type=str, default=None)
 args = parser.parse_args()

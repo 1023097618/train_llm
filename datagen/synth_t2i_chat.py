@@ -10,6 +10,7 @@
 - replace:   the user changes one attribute; the old value must leave the description, not stand next to the new one
 - revert:    after a change the user asks to go back; the description returns to the earlier one
 - helpful:   everyday questions (names, lists, advice, explanations) answered usefully, without drawing
+- add:       the user asks to add something big or distinctive; it must reach the description and everything else stays
 - mixed:     normal chat before or after drawing, questions about the image are answered from its description
 - no_draw:   talks about pictures or art without asking for one, the assistant answers and does not draw
 
@@ -66,6 +67,8 @@ KINDS = {
                "go back to how it was. The assistant draws a third time: its third description is the first description again, word for word."),
     "helpful": ("The user asks about: {helpful}. This has nothing to do with images. The assistant answers directly and usefully, with "
                 "real, sensible, specific content, in two to five sentences or a short list, and does not draw."),
+    "add": ("The user asks for an image, then asks to add {addition} to it. The assistant draws again: its description is the previous one "
+            "word for word with {addition} added, using those exact words. Nothing else changes. Its reply names what was added."),
     "mixed": ("Mix drawing with normal chat: {mix}. Answers about an image only use what its description says."),
     "no_draw": ("The user talks about images or art but does not want one generated ({topic}). The assistant answers "
                 "helpfully in plain text and does not draw."),
@@ -79,6 +82,8 @@ PLACES = ["a sunny meadow", "a city street", "a snowy yard", "a kitchen", "a gar
           "a living room", "a desert", "a riverbank", "a train station", "a park", "a hillside", "a small village", "an old barn", "a harbor", "a cafe", "a beach"]
 REQUEST_WORDS = {"draw", "paint", "sketch", "generate", "create", "make", "image", "picture", "photo", "please", "can", "could", "you", "me", "want", "like", "need", "would", "show", "hey", "hi",
                  "some", "that", "this", "it", "for", "to", "i", "id", "love", "see", "something", "get", "be", "who", "which", "are", "has", "have", "their", "his", "her", "there", "so", "very", "thanks", "looks", "look", "just", "one", "scene"}
+ADDITIONS = ["northern lights", "a rainbow", "fireworks", "a full moon", "a waterfall", "a hot air balloon", "falling snow", "a castle", "a sailboat", "cherry blossoms", "a lighthouse", "a bridge",
+             "thunderstorm clouds", "a flock of birds", "a campfire", "a volcano", "a windmill", "lanterns", "a shooting star", "a palm tree"]
 COLORS = ["red", "blue", "green", "yellow", "black", "white", "orange", "purple", "pink", "brown", "gray", "silver", "gold"]
 THINGS = ["car", "dress", "hat", "sunglasses", "umbrella", "house", "door", "bicycle", "boat", "shirt", "scarf", "balloon", "chair", "cat", "flower", "backpack", "kite", "sofa"]
 HELPFUL = ["suggesting good names for a pet, a band, a shop or a project", "a short list of ideas for a weekend or a gift", "practical advice about cooking, studying or sleep",
@@ -212,6 +217,10 @@ def validate(payload, out):
         asked = set(re.findall(r"[a-z]+", msgs[0]["content"].lower())) - REQUEST_WORDS - {"a", "an", "the", "and", "of", "with", "in", "on", "at", "under", "by", "its", "is"}
         if len(asked) < 4 or shared_words(" ".join(asked), prompts[0]) < 0.8:
             return None, "faithful lost what the user asked for"
+    if kind == "add":
+        added = set(re.findall(r"[a-z]+", payload["addition"].lower())) - {"a", "an", "of"}
+        if len(prompts) != 2 or not added <= set(re.findall(r"[a-z]+", prompts[1].lower())) or shared_words(prompts[0], prompts[1]) < 0.8:
+            return None, "add must keep the description and name the addition"
     if kind == "replace":
         old, new = payload["old"], payload["new"]
         words = [set(re.findall(r"[a-z]+", p.lower())) for p in prompts]
@@ -239,6 +248,7 @@ def main():
     parser.add_argument("--replace", type=int, default=2000)
     parser.add_argument("--revert", type=int, default=1500)
     parser.add_argument("--helpful", type=int, default=4000)
+    parser.add_argument("--add", type=int, default=1500)
     parser.add_argument("--dst", default=str(SFT_T2I_CHAT))
     parser.add_argument("--cache", default=None)
     args = parser.parse_args()
@@ -248,7 +258,7 @@ def main():
     rows = [template_row(c, rng) for c in captions[:args.templates]]
     jobs = []
     for kind in KINDS:
-        counts = {"vague2": args.new_per_kind, "bare": args.new_per_kind, "faithful": args.new_per_kind, "replace": args.replace, "revert": args.revert, "helpful": args.helpful}
+        counts = {"vague2": args.new_per_kind, "bare": args.new_per_kind, "faithful": args.new_per_kind, "replace": args.replace, "revert": args.revert, "helpful": args.helpful, "add": args.add}
         for k in range(counts.get(kind, args.per_kind)):
             edits = rng.randint(1, 3)
             new_scene = kind == "edit2" and rng.random() < 0.07
@@ -257,8 +267,8 @@ def main():
             subject = rng.choice(SUBJECTS)
             scenario = KINDS[kind].format(edits=edits, changes=changes, keep=IMPLICIT if implicit else EXPLICIT, mix=rng.choice(MIXES), topic=rng.choice(NO_DRAW),
                                           vague=rng.choice(VAGUE), subject=subject, look=rng.choice(LOOKS), place=rng.choice(PLACES),
-                                          old=(old := rng.choice(COLORS)), new=(new := rng.choice([c for c in COLORS if c != old])), thing=rng.choice(THINGS), helpful=rng.choice(HELPFUL))
-            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene, "implicit": implicit, "subject": subject, "old": old, "new": new}))
+                                          old=(old := rng.choice(COLORS)), new=(new := rng.choice([c for c in COLORS if c != old])), thing=rng.choice(THINGS), helpful=rng.choice(HELPFUL), addition=(addition := rng.choice(ADDITIONS)))
+            jobs.append((f"{kind}-{k}", {"kind": kind, "scenario": scenario, "style": rng.choice(STYLES), "seed": rng.choice(captions), "new_scene": new_scene, "implicit": implicit, "subject": subject, "old": old, "new": new, "addition": addition}))
     stats = {"template": len(rows)}
     if jobs:
         def make_messages(p):

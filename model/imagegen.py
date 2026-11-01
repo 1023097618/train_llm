@@ -85,7 +85,7 @@ class ImageGen(nn.Module):
         return out.loss, (out.logit.argmax(-1)[valid] == y[valid]).float().mean()
 
     @torch.no_grad()
-    def sample(self, caption_hidden, temperature=0.9, top_k=256, cfg_scale=3.0, generator=None):
+    def sample(self, caption_hidden, temperature=0.9, top_k=256, cfg_scale=7.5, generator=None):
         """caption_hidden (1, L, thinker_dim) -> VQ tokens (GRID, GRID)"""
         L = caption_hidden.shape[1]
         device = caption_hidden.device

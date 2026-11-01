@@ -30,4 +30,5 @@ resume=""
 CUDA_VISIBLE_DEVICES=$GPUS torchrun --standalone --nproc_per_node=$(echo "$GPUS" | tr ',' '\n' | wc -l) \
     -m script.train_imagegen --thinker_ckpt=weight/d24/vlm_rl.ckpt \
     --tokenizer_path=weight/d24/tokenizer.pkl --save_ckpt_path=$CKPT \
-    --data_dir=data/processed/t2i_en256_all --epochs=6 $resume
+    --data_dir=data/processed/t2i_en256_all --epochs=30 \
+    --eval_every=400 --save_every=400 --sample_every=1200 $resume

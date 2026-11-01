@@ -34,7 +34,7 @@ parser.add_argument("--vq_dir", type=str, default=str(T2I_VQ_MODEL))
 parser.add_argument("--out_dir", type=str, default="out/imagegen_sample")
 parser.add_argument("--prompts", type=str, default="|".join(PROMPTS), help="separated by |")
 parser.add_argument("--seeds", type=int, default=4)
-parser.add_argument("--cfg_scale", type=float, default=3.0)
+parser.add_argument("--cfg_scale", type=float, default=7.5)
 parser.add_argument("--temperature", type=float, default=0.9)
 args = parser.parse_args()
 

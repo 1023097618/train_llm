@@ -66,6 +66,8 @@ parser = argparse.ArgumentParser(description="behaviour of conversational image 
 parser.add_argument("--ckpt_path", type=str, required=True)
 parser.add_argument("--tokenizer_path", type=str, required=True)
 parser.add_argument("--stage", type=str, default="t2i_chat_behaviour")
+parser.add_argument("--top_k", type=int, default=1, help="1 is greedy; above it every case runs --repeats times, since sampling differs per run")
+parser.add_argument("--repeats", type=int, default=3)
 parser.add_argument("--report_dir", type=str, default=None)
 args = parser.parse_args()
 
@@ -73,9 +75,11 @@ chat = ChatT2I(args.ckpt_path, args.tokenizer_path)
 
 
 def ask(messages):
-    return chat.reply(messages, top_k=1)  # greedy, the score does not depend on a seed
+    return chat.reply(messages, top_k=args.top_k)
 
 
+if args.top_k > 1:
+    DRAW, NO_DRAW, EDIT, VAGUE, FAITHFUL, REPLACE, REVERT, HELPFUL = (x * args.repeats for x in (DRAW, NO_DRAW, EDIT, VAGUE, FAITHFUL, REPLACE, REVERT, HELPFUL))
 drew = 0
 first_prompts = []
 for text in DRAW:
@@ -126,7 +130,7 @@ for text, need in FAITHFUL:
     print(f"[faith {'ok ' if ok else 'NO '}] {text} -> {prompt}")
 distinct = []
 for text in BARE:  # with the page's sampling
-    prompts = {chat.reply([{"role": "user", "content": text}])[1] for _ in range(5)}
+    prompts = {chat.reply([{"role": "user", "content": text}], top_k=max(args.top_k, 2))[1] for _ in range(5)}
     distinct.append(len(prompts) / 5)
     print(f"[bare] {text}: " + " || ".join(str(p)[:70] for p in list(prompts)[:3]))
 replaced = 0

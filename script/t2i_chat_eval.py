@@ -196,9 +196,9 @@ for first, change, new_word, old_word in REPLACE:
     replaced += ok
     print(f"[swap {'ok ' if ok else 'NO '}] {change!r} -> {new}")
 reverted = reverted_to_first = 0
-for first, change, back, want, gone in REVERT:
+for first, change, undo, want, gone in REVERT:
     messages = [{"role": "user", "content": first}]
-    for text in (change, back):
+    for text in (change, undo):
         reply, prompt = ask(messages)
         if prompt is None:
             reply = FIRST(first)

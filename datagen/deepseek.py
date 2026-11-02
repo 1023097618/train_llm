@@ -12,7 +12,7 @@ def client():
     return OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
 
 
-def run_jobs(jobs, make_messages, validate, cache_path, workers=16, retries=3, temperature=0.7, log_every=50):
+def run_jobs(jobs, make_messages, validate, cache_path, workers=16, retries=3, temperature=0.7, log_every=50, model="deepseek-chat"):
     """
     jobs: list of (job_id, payload)
     make_messages(payload) -> chat messages for the API
@@ -33,7 +33,7 @@ def run_jobs(jobs, make_messages, validate, cache_path, workers=16, retries=3, t
         reason = None
         for _ in range(retries):
             try:
-                resp = api.chat.completions.create(model="deepseek-chat", temperature=temperature,
+                resp = api.chat.completions.create(model=model, temperature=temperature,
                                                    response_format={"type": "json_object"},
                                                    messages=make_messages(payload))
                 result, reason = validate(payload, json.loads(resp.choices[0].message.content))

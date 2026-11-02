@@ -159,9 +159,18 @@ def merge():
     conversations, images = caption_rows(rng, args.look)
     looks = len(conversations)
     files = sorted(glob.glob(str(CHUNKS / "chunk-*.parquet")))
+    labelled = 0
     for f in files:
         table = pq.read_table(f)
-        conversations += table.column("conversations").to_pylist()
+        chunk = table.column("conversations").to_pylist()
+        labels_path = VLM_DATA / "chat_labels" / os.path.basename(f).replace(".parquet", ".json")
+        labels = json.load(open(labels_path, encoding="utf-8")) if os.path.exists(labels_path) else {}
+        for i, label in labels.items():  # datagen/label_chat_images.py looked at the conversation's last picture
+            messages = json.loads(chunk[int(i)])
+            messages += [{"role": "user", "content": label["question"]}, {"role": "assistant", "content": label["answer"]}]
+            chunk[int(i)] = json.dumps(messages, ensure_ascii=False)
+            labelled += 1
+        conversations += chunk
         images += table.column("image_bytes").to_pylist()
     order = list(range(len(conversations)))
     rng.shuffle(order)
@@ -169,7 +178,7 @@ def merge():
     shards = [order[i:i + args.rows_per_shard] for i in range(0, len(order), args.rows_per_shard)]
     for n, idx in enumerate(shards):
         write_chunk(OUT / f"chat-{n:05d}.parquet", [conversations[i] for i in idx], [images[i] for i in idx])
-    print(f"{len(conversations)} conversations ({looks} draw then look, {len(files)} chunks of {len(drawing)} drawing), {sum(map(len, images))} pictures, "
+    print(f"{len(conversations)} conversations ({looks} draw then look, {labelled} with a question about their picture, {len(files)} chunks of {len(drawing)} drawing), {sum(map(len, images))} pictures, "
           f"{len(shards)} shards -> {OUT}; {len(text)} without pictures -> t2i_chat_text.jsonl")
 
 

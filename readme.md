@@ -1,6 +1,6 @@
 # train_llm：从零训练一个小型对话模型
 
-从分词器、预训练、SFT 到强化学习，完整训练一个能对话、会调用工具的小语言模型“光明星”（Guangmingxing，GMX），并用和 [nanochat](https://github.com/karpathy/nanochat) 相同的方法评测每个阶段。在这个模型上，又加了看图能力和英文的对话式生图。
+从分词器、预训练、SFT 到强化学习，完整训练一个能对话、会调用工具的小语言模型“光明星”（Guangmingxing，GMX），并用和 [nanochat](https://github.com/karpathy/nanochat) 相同的方法评测每个阶段。在这个模型上，又加了看图能力和英文的对话式生图，模型能看到自己画的图。
 
 模型结构、优化器和训练流程基本对齐 nanochat，同时参考了 [minimind](https://github.com/jingyaogong/minimind)。在此基础上加了几样东西：
 - 工具调用：计算器，以及按 hermes function-calling 格式定义的任意工具
@@ -75,44 +75,67 @@ RL 阶段，vLLM 和参考模型放在一张卡上，训练模型放在另一张
 
 ## 多模态
 
-一个对话页面可以聊天、看描述改图、用语音输入和收听回复，只支持英文。自己训练的模型负责对话和决策，画图和语音交给开源模型：
+一个对话页面可以聊天、画图、改图、问图里有什么，也能语音输入和朗读回复，只支持英文。自己训练的模型负责对话、决策和看图，画图和语音交给开源模型：
 
 | 能力 | 用什么 | 来源 |
 |---|---|---|
 | 聊天、判断是否画图、写和改绘图描述 | d24 对话模型 | 自己训练 |
-| 看图 | 冻结的 SigLIP2 + 投影层 + d24（`script/train_vlm.py`） | 投影层和对话模型自己训练 |
-| 画图 | [Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo)（Apache 2.0） | 开源 |
+| 看图（包括自己画的图） | 冻结的 SigLIP2 + 投影层 + d24（`script/train_vlm.py`） | 投影层和对话模型自己训练 |
+| 画图、改图 | [Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo)（Apache 2.0） | 开源 |
 | 听写 | [SenseVoice](https://huggingface.co/FunAudioLLM/SenseVoiceSmall) | 开源 |
 | 朗读 | [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M)（Apache 2.0） | 开源 |
 
-**对话如何变成图片**：模型在回复里写 `<|visual prompt|>描述<|/visual prompt|>`，程序检测到后把描述交给 Z-Image-Turbo。改图时模型写一条新的完整描述，再从头画一张。同一段对话用同一个随机种子，所以小改动时背景基本不变，但做不到像素级不变，因为画图模型看不到上一张图。模型回答“图里有什么”时，读的也是自己写的描述。
+**一轮画图对话**（`inference/chat_t2i.py`、`tokenizer/tokenizer.py`）：
 
-**训练数据**（`datagen/synth_t2i_chat.py`）：网上没有找到能直接用的数据，所以约 3 万条对话用模板和 DeepSeek 合成，每类都有程序校验，比如改图后新旧描述的词语重合度、被替换的颜色是否真的消失。训练时混入原有的 SFT 和看图数据（`run_d24_t2i_chat.sh`），以尽量保留原有能力。
+```text
+<|user|>make the car green<|/user|>
+<|assistant|>The car is now green.
+<|edit prompt|><|image ref|>0<|/image ref|>A green car on a road.<|/edit prompt|>      模型写：改第 0 张，以及完整的新描述
+<|image|><|image ref|>1<|/image ref|><|image pad|>×64<|/image|><|/assistant|>          程序放回：新图的编号和图片
+```
+
+- **看图**：SigLIP2 把图片变成 64 个向量，替换 `<|image pad|>` 位置的 embedding，所以模型能看到自己画的图，而不只是描述。
+- **改图**：程序按编号找到原图，连同新描述交给 Z-Image-Turbo 做图生图。没有一个固定强度适合所有改动，所以从低强度开始，每次用 SigLIP2 判断结果是否更像新描述，不够就加大（`inference/image_backend.py`）。图生图会轻微改动整张图，背景不是像素级不变。
+- **回到之前的图**：描述和被引用的图完全相同时，直接返回那张图。
+
+**训练数据**：网上没有找到能直接用的对话数据（[DialogBen](https://hunyuan-dialoggen.github.io) 还没有放出数据），所以都是合成的：
+
+| 数据 | 脚本 | 内容 |
+|---|---|---|
+| 约 3 万条对话 | `datagen/synth_t2i_chat.py` | 模板和 DeepSeek 合成，每类都有程序校验，比如改图后新旧描述的词语重合度、被替换的颜色是否消失 |
+| 约 2.4 万张图 | `script/render_chat_images.py` | 用 Z-Image-Turbo 把其中 1.4 万条对话里的图真的画出来 |
+| 7073 组看图问答 | `datagen/label_chat_images.py` | 让能看图的 DeepSeek 模型看着图写问答，不给它描述 |
+| 2 万条“先画再看” | `script/render_chat_images.py --merge=1` | ALLaVA 的真实图，第一句作描述，问“图里有什么”时答完整描述 |
+
+训练时混入原有的 SFT 和看图数据（`run_d24_t2i_chat.sh`），以尽量保留原有能力。
 
 **结果**（d24，手写的新问题，top-k 2，每题 3 次，`script/t2i_chat_eval.py`）：
 
 | 指标 | 结果 |
 |---|---|
 | 该画时会画 / 不该画时不画 | 1.00 / 1.00 |
-| 模糊修改（“更可爱”）确实改了描述 | 1.00 |
+| 改图时使用 `<\|edit prompt\|>` 并引用正确的图 | 0.98 |
 | 回到上一版 | 1.00 |
-| 改图正确（关键词规则） | 0.85 |
-| 用户提到的细节都写进描述 | 0.80 |
-| 属性替换（“把车改成黄色”） | 0.78 |
-| 改图时保留的词语比例 | 0.86 |
+| 模糊修改（“更可爱”）确实改了描述 | 1.00 |
+| 属性替换（“把车改成黄色”） | 0.94 |
+| 改图正确（关键词规则） | 0.80 |
+| 用户提到的细节都写进描述 | 0.73 |
+| **只有看图才能答对的问题**（描述里不提答案）：真图 / 灰图 | **0.93 / 0.10** |
 
 这些是关键词规则的分数，题量也小，只能作粗略参考。
 
 | 原有能力 | 加入生图前 | 加入生图后 |
 |---|---|---|
 | ChatCORE | 0.250 | 0.252 |
-| ARC-Easy / ARC-Challenge | 0.629 / 0.490 | 0.622 / 0.482 |
-| MMLU | 0.379 | 0.380 |
-| HumanEval | 0.079 | 0.140 |
-| **GSM8K** | 0.173 | **0.138** |
-| 看图（居中准确率均值） | 0.218 | 0.227 |
+| ARC-Easy / ARC-Challenge | 0.629 / 0.490 | 0.616 / 0.496 |
+| MMLU | 0.379 | 0.381 |
+| HumanEval | 0.079 | 0.122 |
+| **GSM8K** | 0.173 | **0.146** |
+| 看图（居中准确率均值） | 0.218 | 0.223 |
 
 GSM8K 下降，很可能是因为这轮 SFT 在 RL 之后，冲掉了 RL 的部分收益，这一点没有单独验证过。
+
+**已知问题**：日常聊天能力有限（比如起名字答得很差）；看图时细节和数量常出错，也可能说看到了图里没有的东西；模型有时把用户的细节漏掉；回复说的改动不一定都画出来了。
 
 **试过但没有采用的**：
 - 自己训练的画图解码器（`model/imagegen.py`）：约 1.45 亿参数的 GPT 预测 LlamaGen VQ token，训练到 12 轮后主体能切题，但结构经常出错（狗腿错乱、多只眼睛）。
@@ -124,11 +147,11 @@ GSM8K 下降，很可能是因为这轮 SFT 在 RL 之后，冲掉了 RL 的部�
 python -m script.download_image_backend --model=z-image-turbo
 # diffusers 和 Kokoro 的依赖装在训练环境之外，安装命令写在 inference/image_backend.py 和 inference/speech_io.py 开头
 PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 ~/train_llm_pylibs/voice/bin/python -m script.chat_t2i_web \
-    --chat_ckpt=weight/d24/chat_t2i_v5.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
+    --chat_ckpt=weight/d24/chat_t2i_v7.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
 ssh -L 8765:127.0.0.1:8765 <服务器>   # 然后打开 http://localhost:8765
 ```
 
-页面只监听本机地址，没有内容过滤，也没有登录，不要直接暴露到公网。显存约需 27 GB。
+页面只监听本机地址，没有内容过滤，也没有登录，不要直接暴露到公网。显存约需 28 GB。
 
 ## 快速开始
 
@@ -173,7 +196,7 @@ run_*.sh      不同硬件配置的完整流程，以及 d24 的 RL 和多模态
 
 - RL：增加训练步数，或者跑第二个 epoch（这次只用了 3 万道新题里的约 7500 道）；尝试异步 RL，让采样和训练重叠进行；做工具调用方向的 RL。
 - 用 vLLM 做部署和加速推理。
-- 对话生图：接入能看原图的编辑模型，让背景真正保持不变；把生成的图送回 SigLIP，让模型真的看图回答；在最后再跑一轮 RL，找回 GSM8K。
+- 对话生图：用局部重绘或专门的编辑模型，让背景真正保持不变；在最后再跑一轮 RL，找回 GSM8K；让用户也能上传图片。
 
 ## 致谢
 

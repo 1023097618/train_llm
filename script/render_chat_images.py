@@ -88,7 +88,7 @@ def render(row, back, seed):
             if prompts[source] == prompt:
                 array = pictures[source]
             else:
-                array = back.edit(pictures[source], prompt, prompts[source], seed=seed, size=args.size, steps=args.steps)
+                array = back.edit(pictures[source], prompt, prompts[source], seed=seed, size=args.size, steps=args.steps, check=False)
         else:
             array = back.draw(prompt, seed=seed, size=args.size, steps=args.steps)
         pictures[number], prompts[number] = array, prompt

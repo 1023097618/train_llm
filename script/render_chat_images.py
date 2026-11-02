@@ -9,7 +9,7 @@ caption. Those answers hold details the description lacks, so they need the pict
 usage:
 PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 python -m script.render_chat_images --shard=0 --num_shards=2
 PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=2 python -m script.render_chat_images --shard=1 --num_shards=2
-python -m script.render_chat_images --merge
+python -m script.render_chat_images --merge=1
 """
 import sys
 sys.stdout.reconfigure(line_buffering=True)

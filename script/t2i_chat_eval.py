@@ -65,6 +65,19 @@ HELPFUL = [("What's a good name for a golden retriever?", ["buddy", "max", "sunn
            ("What does a bee make?", ["honey"]), ("What is the largest planet in our solar system?", ["jupiter"])]
 BARE = ["draw a cat", "draw a dog", "draw a house", "draw a car", "draw a bird", "draw a flower"]
 
+
+
+def FIRST(request):
+    """stands in when the model did not draw the first picture: the later turn still needs one to refer to"""
+    return {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": request},
+                                             {"type": "image_id", "image_ref": "0"}]}
+
+
+def edited_ref(message):
+    """the picture an <|edit prompt|> changes, or None when the turn drew from scratch"""
+    return next((int(p["image_ref"]) for p in message["content"] if p["type"] == "i2i_prompt"), None)
+
+
 parser = argparse.ArgumentParser(description="behaviour of conversational image generation")
 parser.add_argument("--ckpt_path", type=str, required=True)
 parser.add_argument("--tokenizer_path", type=str, required=True)
@@ -96,16 +109,17 @@ for text in NO_DRAW:
     reply, prompt = ask([{"role": "user", "content": text}])
     quiet += prompt is None
     print(f"[text {'ok ' if prompt is None else 'NO '}] {text} -> {prompt or reply['content'][:1]}")
-edit_drew = edit_ok = 0
+edit_drew = edit_ok = used_edit = 0
 retained = []
 for first, change, need, keep, gone in EDIT:
     messages = [{"role": "user", "content": first}]
     reply, prompt = ask(messages)
     if prompt is None:  # the edit needs a first image: give it the plain request as its description
-        reply = {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": first}]}
+        reply = FIRST(first)
     messages += [reply, {"role": "user", "content": change}]
-    _, new = ask(messages)
+    answer, new = ask(messages)
     edit_drew += new is not None
+    used_edit += edited_ref(answer) == 0
     words = set(re.findall(r"[a-z]+", new.lower())) if new else set()
     ok = new is not None and all(any(x.startswith(w) for x in words) for w in need + keep) and not words & set(gone)
     edit_ok += ok
@@ -117,7 +131,7 @@ for first, change, keep in VAGUE:
     messages = [{"role": "user", "content": first}]
     reply, prompt = ask(messages)
     if prompt is None:
-        reply, prompt = {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": first}]}, first
+        reply, prompt = FIRST(first), first
     messages += [reply, {"role": "user", "content": change}]
     _, new = ask(messages)
     changed = bool(new) and len(set(re.findall(r"[a-z]+", new.lower())) - set(re.findall(r"[a-z]+", prompt.lower()))) >= 2
@@ -141,24 +155,25 @@ for first, change, new_word, old_word in REPLACE:
     messages = [{"role": "user", "content": first}]
     reply, prompt = ask(messages)
     if prompt is None:
-        reply = {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": first}]}
+        reply = FIRST(first)
     messages += [reply, {"role": "user", "content": change}]
     _, new = ask(messages)
     words = set(re.findall(r"[a-z]+", new.lower())) if new else set()
     ok = new_word in words and old_word not in words
     replaced += ok
     print(f"[swap {'ok ' if ok else 'NO '}] {change!r} -> {new}")
-reverted = 0
+reverted = reverted_to_first = 0
 for first, change, back, want, gone in REVERT:
     messages = [{"role": "user", "content": first}]
     for text in (change, back):
         reply, prompt = ask(messages)
         if prompt is None:
-            reply = {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": first}]}
+            reply = FIRST(first)
         messages += [reply, {"role": "user", "content": text}]
-    _, new = ask(messages)
+    answer, new = ask(messages)
     ok = bool(new) and want in new.lower() and gone not in new.lower()
     reverted += ok
+    reverted_to_first += edited_ref(answer) == 0
     print(f"[back {'ok ' if ok else 'NO '}] {back!r} -> {new}")
 helpful = 0
 for text, any_of in HELPFUL:
@@ -168,7 +183,7 @@ for text, any_of in HELPFUL:
     helpful += ok
     print(f"[help {'ok ' if ok else 'NO '}] {text} -> {said[:170]}")
 lengths = [len(p.split()) for p in first_prompts]
-results = {"replace": replaced / len(REPLACE), "revert": reverted / len(REVERT), "helpful": helpful / len(HELPFUL), "vague_changed": vague_changed / len(VAGUE), "vague_correct": vague_ok / len(VAGUE), "faithful": faithful / len(FAITHFUL), "bare_distinct": sum(distinct) / len(distinct),
+results = {"edit_uses_edit_prompt": used_edit / len(EDIT), "revert_refers_to_first": reverted_to_first / len(REVERT), "replace": replaced / len(REPLACE), "revert": reverted / len(REVERT), "helpful": helpful / len(HELPFUL), "vague_changed": vague_changed / len(VAGUE), "vague_correct": vague_ok / len(VAGUE), "faithful": faithful / len(FAITHFUL), "bare_distinct": sum(distinct) / len(distinct),
            "mean_first_description_words": sum(lengths) / max(1, len(lengths)), "words_retained_by_edit": sum(retained) / max(1, len(retained)),
            "draws_when_asked": drew / len(DRAW), "stays_in_text": quiet / len(NO_DRAW), "edit_draws_again": edit_drew / len(EDIT), "edit_correct": edit_ok / len(EDIT)}
 print(results)

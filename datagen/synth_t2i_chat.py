@@ -96,6 +96,7 @@ CHANGES = ["a different color", "a different time of day", "different weather", 
            "a size change of something", "the lighting changed"]
 IMPLICIT = "The user just says what to change, the way people do, and never says that the rest should stay."
 EXPLICIT = "In one of the requests the user also says that something should stay as it is, in their own words."
+EDIT_KINDS = ("edit2", "vague2", "replace", "revert", "add")
 SAYS_KEEP = re.compile(r"(?i)\b(keep|keeping|same|unchanged|stay|stays|as it is|as is|don't change|do not change|everything else|the rest)\b")
 MIXES = ["the user chats about a topic first, then asks for a related image",
          "the assistant draws, then the user asks what is in the picture",
@@ -144,14 +145,36 @@ def drawing_turn(text, prompt):
     return {"role": "assistant", "content": [{"type": "text", "content": text}, {"type": "t2i_prompt", "content": prompt}]}
 
 
+def with_image_refs(messages, kind):
+    """number the pictures and turn changes into <|edit prompt|> on the previous one, as in script/train_token.py: the description
+    stays complete, the image model gets it together with the picture. Going back refers to the first picture."""
+    out, count = [], 0
+    previous = None
+    for m in messages:
+        if m["role"] != "assistant" or not isinstance(m["content"], list):
+            out.append(m)
+            continue
+        text, prompt = m["content"][0], m["content"][1]["content"]
+        new_picture = count == 0 or kind not in EDIT_KINDS or (previous and shared_words(previous, prompt) < 0.4)
+        if new_picture:
+            parts = [text, {"type": "t2i_prompt", "content": prompt}]
+        else:
+            ref = 0 if kind == "revert" and count == 2 else count - 1
+            parts = [text, {"type": "i2i_prompt", "image_ref": str(ref), "content": prompt}]
+        out.append({"role": "assistant", "content": parts + [{"type": "image_id", "image_ref": str(count)}]})
+        count += 1
+        previous = prompt
+    return out
+
+
 def template_row(caption, rng):
     subject = caption.rstrip(".!? ")
     if not re.match(r"[A-Z]{2}|[A-Z][a-z]+ [A-Z]", subject):  # keeps names and acronyms capitalized
         subject = subject[0].lower() + subject[1:]
     # "picture of ..." only reads well in front of something like "a red car", not "in a forest, a man walks"
     requests = REQUESTS if NOUN_PHRASE.match(subject) else FULL_SENTENCE_REQUESTS
-    return {"messages": [{"role": "user", "content": rng.choice(requests).format(c=subject)},
-                         drawing_turn(rng.choice(REPLIES), caption)],
+    return {"messages": with_image_refs([{"role": "user", "content": rng.choice(requests).format(c=subject)},
+                                         drawing_turn(rng.choice(REPLIES), caption)], "template"),
             "metadata": {"source": "t2i_chat", "kind": "template"}}
 
 
@@ -277,7 +300,7 @@ def main():
         results = run_jobs(jobs, make_messages, validate, args.cache or args.dst + ".cache.jsonl", temperature=1.0)
         for job_id, p in jobs:
             if not is_failed(results[job_id]) and keep_cached(p["kind"], results[job_id]):
-                rows.append({"messages": results[job_id], "metadata": {"source": "t2i_chat", "kind": p["kind"]}})
+                rows.append({"messages": with_image_refs(results[job_id], p["kind"]), "metadata": {"source": "t2i_chat", "kind": p["kind"]}})
                 stats[p["kind"]] = stats.get(p["kind"], 0) + 1
     os.makedirs(os.path.dirname(os.path.abspath(args.dst)), exist_ok=True)
     with open(args.dst, "w", encoding="utf-8") as f:

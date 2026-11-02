@@ -31,11 +31,13 @@ parser.add_argument("--voice", type=int, default=1, help="microphone and spoken 
 args = parser.parse_args()
 
 chat = ChatT2I(args.chat_ckpt, args.tokenizer_path, args.decoder_ckpt or None)
+back = None
 if args.decoder_ckpt:
     draw = chat.draw
 else:
     from inference.image_backend import ZImageBackend
-    draw = ZImageBackend().draw
+    back = ZImageBackend()
+    draw = back.draw
 lock = threading.Lock()  # one conversation turn on the GPU at a time
 speech_in = speech_out = None
 if args.voice:
@@ -101,6 +103,9 @@ class Turn(BaseModel):
     seed: int = 0
 
 
+pictures = {}  # conversation seed -> {picture number: (array, description)}, the few latest conversations
+
+
 @app.get("/", response_class=HTMLResponse)
 def page():
     return PAGE
@@ -112,8 +117,17 @@ def turn(request: Turn):
         message, prompt = chat.reply(request.messages)
         image = None
         if prompt:
+            parts = {p["type"]: p for p in message["content"]}
+            seed = request.seed or random.randrange(10 ** 6)
+            store = pictures.setdefault(request.seed, {})
+            source = store.get(int(parts["i2i_prompt"]["image_ref"])) if "i2i_prompt" in parts else None
+            # a turn without its picture (the page restarted, or our own decoder) draws from the description alone
+            array = back.edit(source[0], prompt, source[1], seed=seed) if source and back else draw(prompt, seed=seed)
+            store[int(parts["image_id"]["image_ref"])] = (array, prompt)
+            while len(pictures) > 20:
+                pictures.pop(next(iter(pictures)))
             buffer = io.BytesIO()
-            Image.fromarray(draw(prompt, seed=request.seed or random.randrange(10 ** 6))).save(buffer, "PNG")
+            Image.fromarray(array).save(buffer, "PNG")
             image = base64.b64encode(buffer.getvalue()).decode()
     text = next((p["content"] for p in message["content"] if p["type"] == "text"), "")
     return {"message": message, "text": text, "prompt": prompt, "image": image}

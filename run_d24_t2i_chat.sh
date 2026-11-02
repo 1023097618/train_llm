@@ -23,8 +23,8 @@ EVAL_GPU=${GPUS%%,*}
 WEIGHT_DIR=weight/d24
 TOKENIZER=$WEIGHT_DIR/tokenizer.pkl
 BASE_CKPT=$WEIGHT_DIR/vlm_rl.ckpt
-CKPT=$WEIGHT_DIR/chat_t2i_v5.ckpt
-REPORT=$WEIGHT_DIR/report_t2i_chat_v5
+CKPT=$WEIGHT_DIR/chat_t2i_v6.ckpt
+REPORT=$WEIGHT_DIR/report_t2i_chat_v6
 mkdir -p "$REPORT" log
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # wandb: the server's direct connection gets 403, offline when the forwarded proxy is down

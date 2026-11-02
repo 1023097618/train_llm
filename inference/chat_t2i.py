@@ -23,19 +23,32 @@ def load_gpt(path, tokeniz, device):
 
 
 def parse_reply(tokens, special, decode):
-    """the tokens of one assistant turn -> (text, description or None); an unfinished description does not count"""
-    start, end = special["<|visual prompt|>"], special["<|/visual prompt|>"]
-    stop = special["<|/assistant|>"]
-    if stop in tokens:
-        tokens = tokens[:tokens.index(stop)]
-    if start not in tokens:
-        return decode(tokens).strip() if tokens else "", None
-    s = tokens.index(start)
-    text = decode(tokens[:s]).strip() if s else ""
-    if end not in tokens[s:]:
-        return text, None
-    prompt = tokens[s + 1:tokens.index(end, s)]
-    return text, decode(prompt).strip() if prompt else None
+    """the tokens of one assistant turn -> (text, description or None, the picture it changes or None); an unfinished description
+    does not count. <|edit prompt|> holds <|image ref|>N<|/image ref|> and then the complete new description."""
+    stops = [special["<|/assistant|>"], special["<|image|>"]]
+    for i, t in enumerate(tokens):
+        if t in stops:
+            tokens = tokens[:i]
+            break
+    for start, end, is_edit in ((special["<|visual prompt|>"], special["<|/visual prompt|>"], False),
+                                (special["<|edit prompt|>"], special["<|/edit prompt|>"], True)):
+        if start not in tokens:
+            continue
+        s = tokens.index(start)
+        text = decode(tokens[:s]).strip() if s else ""
+        if end not in tokens[s:]:
+            return text, None, None
+        body = tokens[s + 1:tokens.index(end, s)]
+        ref = None
+        if is_edit:
+            ref_start, ref_end = special["<|image ref|>"], special["<|/image ref|>"]
+            if ref_start not in body or ref_end not in body:
+                return text, None, None
+            ref_text = decode(body[body.index(ref_start) + 1:body.index(ref_end)]).strip()
+            ref = int(ref_text) if ref_text.isdigit() else -1
+            body = body[body.index(ref_end) + 1:]
+        return text, decode(body).strip() if body else None, ref
+    return decode(tokens).strip() if tokens else "", None, None
 
 
 class ChatT2I:
@@ -54,7 +67,8 @@ class ChatT2I:
             self.vq = load_vq(vq_dir, device)
 
     def reply(self, messages, top_k=2, max_new_tokens=200):  # top_k 2 keeps edits faithful (82% of the words, 8 keeps 71%), first pictures still differ
-        """messages end with the user's turn -> the assistant message to append to them, and its description or None"""
+        """messages end with the user's turn -> the assistant message to append to them, and its description or None. A picture gets
+        the next number in an image_id part; an edit's source picture is in its i2i_prompt part, clamped to pictures that exist."""
         special = self.tokeniz.special_token
         history = list(messages)
         while True:
@@ -62,15 +76,30 @@ class ChatT2I:
             if len(tokens) + max_new_tokens <= self.chat.config.seq_len or len(history) <= 1:
                 break
             history = history[2:]  # the oldest exchange goes first
-        previous = [p["content"] for m in history if isinstance(m["content"], list) for p in m["content"] if p["type"] == "t2i_prompt"]
+        parts = [p for m in messages if isinstance(m["content"], list) for p in m["content"]]
+        count = sum(p["type"] == "image_id" for p in parts)
+        previous = [p["content"] for p in parts if p["type"] in ("t2i_prompt", "i2i_prompt")]
+        stops = {special["<|/assistant|>"], special["<|image|>"]}
         for _ in range(3):  # a description repeated word for word draws the same picture while claiming a change
-            sentence, _ = self.engine.generate_batch(tokens, 1, max_len=len(tokens) + max_new_tokens, max_new_token=max_new_tokens, k=top_k)
-            text, prompt = parse_reply(sentence[0][len(tokens):], special, self.tokeniz.decode)
-            if top_k == 1 or not prompt or not previous or prompt != previous[-1]:
+            out = []
+            stream = self.engine.generate(torch.tensor(tokens, device=self.device), 1, k=top_k, max_len=len(tokens) + max_new_tokens + 8)
+            for _ in range(max_new_tokens):
+                token = int(next(stream)[0][0])
+                out.append(token)
+                if token in stops:
+                    break
+            stream.close()
+            text, prompt, ref = parse_reply(out, special, self.tokeniz.decode)
+            if top_k == 1 or not prompt or not previous or prompt != previous[-1] or ref is not None and ref != count - 1:
                 break
         content = [{"type": "text", "content": text}] if text else []
         if prompt:
-            content.append({"type": "t2i_prompt", "content": prompt})
+            if ref is not None and count:  # a picture to change exists
+                ref = ref if 0 <= ref < count else count - 1
+                content.append({"type": "i2i_prompt", "image_ref": str(ref), "content": prompt})
+            else:
+                content.append({"type": "t2i_prompt", "content": prompt})
+            content.append({"type": "image_id", "image_ref": str(count)})
         return {"role": "assistant", "content": content}, prompt
 
     @torch.no_grad()

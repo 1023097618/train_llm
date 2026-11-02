@@ -105,6 +105,8 @@ class Engine:
         end_of_tool_output=self.tokeniz.special_token['<|/tool output|>']
         start_of_think=self.tokeniz.special_token['<|think|>']
         end_of_think=self.tokeniz.special_token['<|/think|>']
+        edit_prompt_start=self.tokeniz.special_token['<|edit prompt|>']
+        image_ref_start=self.tokeniz.special_token['<|image ref|>']
         
         while True:
             next_logit=logit[:,-1,:]#(B,C)
@@ -119,7 +121,10 @@ class Engine:
                 if is_forced:
                     next_token[i,0]=row_state.output_token.popleft()
                     continue
-                if next_token[i,0]==start_of_tool_call:
+                if next_token[i,0]==edit_prompt_start:
+                    # 这一步转移不训练（见 tokenizer.render_conversation），由运行时补上
+                    row_state.output_token.append(image_ref_start)
+                elif next_token[i,0]==start_of_tool_call:
                     row_state.toolcall=True
                 elif next_token[i,0]==end_of_tool_call and row_state.toolcall:
                     toolcall=self.tokeniz.decode(row_state.tool_call)

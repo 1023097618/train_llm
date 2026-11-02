@@ -72,7 +72,7 @@ class Engine:
         return execute_tool_call(toolcall,self.fn)
 
     @torch.inference_mode()
-    def generate(self,token:torch.Tensor,num_samples,k=8,max_len=2048):
+    def generate(self,token:torch.Tensor,num_samples,k=8,max_len=2048,media_embeds=None):
         """
         Args:
             token (torch.Tensor): (T,) input token
@@ -84,7 +84,7 @@ class Engine:
         """
         token=token.unsqueeze(0) #(1,T)
         kv_cache=self.gpt.get_kv_cache(1,max_len)
-        out:gpt.GPTOutPut=self.gpt(token,kv_cache=kv_cache)#(1,T,C)
+        out:gpt.GPTOutPut=self.gpt(token,kv_cache=kv_cache,media_embeds=media_embeds)#(1,T,C)
         logit=out.logit.repeat((num_samples,1,1)) #(B,T,C)
         kv_cache_1=self.gpt.get_kv_cache(num_samples,max_len)
         kv_cache_1.prefill(kv_cache)

@@ -147,21 +147,19 @@ class Tokenizer:
                             add_token(image_ref_end, Ignored.NO)
                             add_token(self.encode_ordinary(part['content']), Ignored.NO)
                             add_token(edit_prompt_end, Ignored.NO)
-                        elif part['type'] == 'image_id':
-                            # 运行时给画好的图编号，后面的 <edit prompt> 靠它引用；不训练，也不占图像 token
-                            add_token(start_of_image, Ignored.YES)
-                            add_token(image_ref_start, Ignored.YES)
-                            add_token(self.encode_ordinary(part['image_ref']), Ignored.YES)
-                            add_token(image_ref_end, Ignored.YES)
-                            add_token(end_of_image, Ignored.YES)
                         elif part['type'] == 'audio':
                             audio_len = part['content'].shape[0]
                             add_token(start_of_audio, Ignored.YES)
                             add_token([audio_pad] * audio_len, Ignored.YES)
                             add_token(end_of_audio, Ignored.YES)
                         elif part['type'] == 'image':
+                            # 程序把画好的图放回对话：<image><image ref>N</image ref><image pad>*n</image>，后面的 <edit prompt> 靠编号引用
                             image_len = part.get('length', 196)
                             add_token(start_of_image, Ignored.YES)
+                            if 'image_ref' in part:
+                                add_token(image_ref_start, Ignored.YES)
+                                add_token(self.encode_ordinary(part['image_ref']), Ignored.YES)
+                                add_token(image_ref_end, Ignored.YES)
                             add_token([image_pad] * image_len, Ignored.YES)
                             add_token(end_of_image, Ignored.YES)
                         else:

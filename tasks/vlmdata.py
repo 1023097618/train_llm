@@ -67,7 +67,8 @@ class ImageTextStream:
                     self.cursor["row"] += 1
                     if not by_file and row % self.num_shards != self.shard_id:
                         continue
-                    yield to_messages(convs[row], self.tokens_per_image), [images[row]]
+                    # the "chat" source of script/render_chat_images.py has several pictures in a conversation
+                    yield to_messages(convs[row], self.tokens_per_image), images[row] if isinstance(images[row], list) else [images[row]]
                 self.cursor["file"] += 1
                 self.cursor["row"] = 0
             self.cursor["epoch"] += 1

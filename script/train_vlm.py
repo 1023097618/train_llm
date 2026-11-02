@@ -47,6 +47,7 @@ parser.add_argument("--instruct_weight", type=float, default=None, help="samplin
 parser.add_argument("--text_weight", type=float, default=None, help="sampling weight of the text SFT replay (align 0, sft 0.2)")
 parser.add_argument("--t2i_chat_path", type=str, default="", help="sft: jsonl of drawing conversations (datagen/synth_t2i_chat.py), added to the text replay")
 parser.add_argument("--t2i_chat_epochs", type=int, default=2, help="times the drawing conversations appear in the text replay")
+parser.add_argument("--chat_weight", type=float, default=0.0, help="sampling weight of conversations with the pictures the model drew (script/render_chat_images.py)")
 parser.add_argument("--epochs", type=float, default=1.0, help="passes over the main data of the stage (align: captions, sft: instructions)")
 parser.add_argument("--max_steps", type=int, default=0)
 parser.add_argument("--device_batch_size", type=int, default=2)
@@ -118,6 +119,9 @@ trained = [p for g in groups for p in g["params"]]
 # ---- data ----
 files = {name: vlmdata.shard_files(args.data_dir, name, "train") for name in ("caption", "instruct")}
 weights = {"caption": args.caption_weight, "instruct": args.instruct_weight}
+if args.chat_weight > 0:
+    files["chat"] = vlmdata.shard_files(args.data_dir, "chat", "train")
+    weights["chat"] = args.chat_weight
 image_sources = [(name, files[name], weights[name]) for name in files if weights[name] > 0]
 text_mixture = None
 if args.text_weight > 0:
@@ -145,7 +149,7 @@ val_sources = [(name, vlmdata.shard_files(args.data_dir, name, "val"), w) for na
 # with their sampling weights; tokens per conversation are estimated from a sample of the main source
 main = "caption" if args.stage == "align" else "instruct"
 main_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in files[main])
-main_share = weights[main] / (args.caption_weight + args.instruct_weight + args.text_weight)
+main_share = weights[main] / (sum(weights.values()) + args.text_weight)
 probe_lens = []
 for messages, images in vlmdata.ImageTextStream(files[main], 0, 1, vision_config.tokens_per_image):
     r = train_set.render(messages, images)

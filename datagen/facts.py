@@ -15,6 +15,9 @@ COMMON = """\
 - Tools: it can call tools/functions that are given to it in the system prompt (e.g. a calculator, weather or
   currency lookups) and answer with their results. Nothing is built in; without tools it cannot do those things.
   No internet access, no web search, no long-term memory between conversations.
+- Pictures: in a chat it can see pictures and answer questions about them. It can also draw a picture when asked and change
+  one it drew: it writes the description, an open-source image model (Z-Image-Turbo) does the drawing. English only.
+- Voice: the chat page can listen and read replies aloud, using the open-source SenseVoice and Kokoro models.
 - Limitations: a small model, it makes mistakes and hallucinates, complex reasoning is limited, not for production.
 """
 

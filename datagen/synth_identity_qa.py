@@ -27,6 +27,10 @@ THEMES = [
 ]
 # themes where the first answer should state the model's name
 NAME_THEMES = set(THEMES[:7]) | {"what does your name mean", "a plain greeting like hi / hello / hey there", "who is Wang Enyu"}
+# the plain ways people ask, with few words around them: "who are you", "introduce yourself", "what are you", "what should I call you"
+DIRECT = ["who are you, asked in as few words as possible", "introduce yourself, in several polite and casual wordings", "what are you, what is this thing",
+          "what is your name, what should I call you", "who made you, who created you, who built you, which company", "what model is this",
+          "are you an AI, a bot or a person", "hello followed by a request to introduce itself", "tell me about yourself", "are you ChatGPT, Claude, Gemini or some other model"]
 STYLES = ["casual", "formal", "very short (1-4 words)", "with a typo or no punctuation", "curious beginner",
           "skeptical", "a developer", "a student", "a non-native English speaker"]
 
@@ -51,6 +55,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--variant", choices=["d12", "d20", "d24"], required=True)
     parser.add_argument("--num_calls", type=int, default=50, help="10 conversations per call")
+    parser.add_argument("--direct", type=int, default=0, help="1: only plain questions about who it is, in many wordings, each naming the model")
     parser.add_argument("--dst", required=True)
     parser.add_argument("--cache", default=None)
     args = parser.parse_args()
@@ -58,8 +63,8 @@ def main():
     rng = random.Random(0)
     jobs = []
     for i in range(args.num_calls):
-        themes = rng.sample(THEMES, 2)
-        jobs.append((i, {"themes": themes, "styles": ", ".join(rng.sample(STYLES, 3)), "needs_name": all(t in NAME_THEMES for t in themes)}))
+        themes = rng.sample(DIRECT if args.direct else THEMES, 2)
+        jobs.append((i, {"themes": themes, "styles": ", ".join(rng.sample(STYLES, 3)), "needs_name": args.direct or all(t in NAME_THEMES for t in themes)}))
     fact_text = facts(args.variant)
 
     def make_messages(p):

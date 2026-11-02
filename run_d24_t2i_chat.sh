@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# d24 conversational image generation: the chat model learns when to draw and how to write the description, on top of the
-# VLM + RL model, with text replay so the other abilities stay. vlm_rl.ckpt is not touched: the image decoder keeps reading
-# captions with it. Benchmarks after training show what the extra round cost.
+# d24 conversational image generation: the chat model learns when to draw, how to write the description and to see its pictures,
+# with text replay so the other abilities stay. This round is short, on top of chat_t2i_v7: it brings back who the model is, which
+# the earlier rounds of image training never replayed (those trained from vlm_rl.ckpt with 1600 steps at --llm_lr_frac=0.07).
+# Benchmarks after training show what the extra round cost.
 # python -m datagen.synth_t2i_chat, then script.render_chat_images (the pictures the model will see) first.
 # GPUS=1,2 setsid nohup bash run_d24_t2i_chat.sh >> log/d24_t2i_chat.log 2>&1 < /dev/null &
 # Rerunning the same command after a kill continues where it stopped.
@@ -22,9 +23,10 @@ GPUS=${GPUS:-1,2}
 EVAL_GPU=${GPUS%%,*}
 WEIGHT_DIR=weight/d24
 TOKENIZER=$WEIGHT_DIR/tokenizer.pkl
-BASE_CKPT=$WEIGHT_DIR/vlm_rl.ckpt
-CKPT=$WEIGHT_DIR/chat_t2i_v7.ckpt
-REPORT=$WEIGHT_DIR/report_t2i_chat_v7
+BASE_CKPT=${BASE_CKPT:-$WEIGHT_DIR/chat_t2i_v7.ckpt}
+CKPT=${CKPT:-$WEIGHT_DIR/chat_t2i_v8.ckpt}
+REPORT=${REPORT:-$WEIGHT_DIR/report_t2i_chat_v8}
+D=data/raw/custom
 mkdir -p "$REPORT" log
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # wandb: the server's direct connection gets 403, offline when the forwarded proxy is down
@@ -40,7 +42,8 @@ if [ ! -f "$CKPT.done" ]; then
     CUDA_VISIBLE_DEVICES=$GPUS torchrun --standalone --nproc_per_node=$(echo "$GPUS" | tr ',' '\n' | wc -l) -m script.train_vlm --stage=sft \
         --ckpt_path=$BASE_CKPT --tokenizer_path=$TOKENIZER --save_ckpt_path=$CKPT $resume \
         --t2i_chat_path=data/raw/custom/t2i_chat_text.jsonl --t2i_chat_epochs=2 --caption_weight=0.1 --instruct_weight=0.25 --text_weight=0.45 --chat_weight=0.2 \
-        --llm_lr_frac=0.07 --max_steps=1600
+        --identity_paths=$D/identity_conversations_en_d24.jsonl:3,$D/identity_qa_d24.jsonl:10,$D/identity_direct_d24.jsonl:15 \
+        --llm_lr_frac=0.03 --max_steps=300 --eval_every=50 --save_every=50
     touch "$CKPT.done"
 fi
 unset HTTPS_PROXY HTTP_PROXY NO_PROXY

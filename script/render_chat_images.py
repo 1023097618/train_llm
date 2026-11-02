@@ -64,6 +64,7 @@ def split_rows():
     templates = [r for r in rows if r["metadata"]["kind"] == "template"]
     rng.shuffle(templates)
     drawing = [r for r in rows if has_picture(r) and r["metadata"]["kind"] != "template"] + templates[:args.templates]
+    rng.shuffle(drawing)
     return drawing, [r for r in rows if not has_picture(r)]
 
 

@@ -21,13 +21,13 @@ class ZImageBackend:
 
     @torch.inference_mode()
     def edit(self, image, prompt, previous_prompt, seed=0, size=768, steps=9):
-        """the picture (uint8 array) + its complete new description -> uint8 array. A small change keeps closer to the picture, a large one
-        needs more freedom to happen at all (0.6 changed sunglasses but not a cat's face or the time of day, 0.8 did)."""
+        """the picture (uint8 array) + its complete new description -> uint8 array. Swapping one word such as a color works close to the
+        picture, anything more needs freedom to happen at all (at 0.6 a cat stayed as cute as it was, and no sofa appeared)."""
         from PIL import Image
         words = lambda text: set(re.findall(r"[a-z]+", text.lower()))
-        kept = len(words(previous_prompt) & words(prompt)) / max(1, len(words(previous_prompt)))
+        strength = 0.65 if len(words(prompt) - words(previous_prompt)) <= 1 else 0.8
         generator = torch.Generator(device=self.device).manual_seed(seed)
-        out = self.img2img(prompt=prompt, image=Image.fromarray(image), strength=0.6 if kept >= 0.9 else 0.8, height=size, width=size,
+        out = self.img2img(prompt=prompt, image=Image.fromarray(image), strength=strength, height=size, width=size,
                            num_inference_steps=steps, guidance_scale=0.0, generator=generator).images[0]
         return np.asarray(out.convert("RGB"))
 

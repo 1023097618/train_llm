@@ -1,11 +1,12 @@
 # train_llm：从零训练一个小型对话模型
 
-从分词器、预训练、SFT 到强化学习，完整训练一个能对话、会调用工具的小语言模型“光明星”（Guangmingxing，GMX），并用和 [nanochat](https://github.com/karpathy/nanochat) 相同的方法评测每个阶段。
+从分词器、预训练、SFT 到强化学习，完整训练一个能对话、会调用工具的小语言模型“光明星”（Guangmingxing，GMX），并用和 [nanochat](https://github.com/karpathy/nanochat) 相同的方法评测每个阶段。在这个模型上，又加了看图能力和英文的对话式生图。
 
 模型结构、优化器和训练流程基本对齐 nanochat，同时参考了 [minimind](https://github.com/jingyaogong/minimind)。在此基础上加了几样东西：
 - 工具调用：计算器，以及按 hermes function-calling 格式定义的任意工具
 - 用 vLLM 做 RL 采样和对话评测
 - 带 KL 约束的 RL，以及可以续跑的训练
+- 看图和对话式生图，见“多模态”一节
 
 ## 结果
 
@@ -72,6 +73,63 @@
 
 RL 阶段，vLLM 和参考模型放在一张卡上，训练模型放在另一张卡上，因为 d24 的训练状态加上 vLLM 放不进一张 32GB 的卡。
 
+## 多模态
+
+一个对话页面可以聊天、看描述改图、用语音输入和收听回复，只支持英文。自己训练的模型负责对话和决策，画图和语音交给开源模型：
+
+| 能力 | 用什么 | 来源 |
+|---|---|---|
+| 聊天、判断是否画图、写和改绘图描述 | d24 对话模型 | 自己训练 |
+| 看图 | 冻结的 SigLIP2 + 投影层 + d24（`script/train_vlm.py`） | 投影层和对话模型自己训练 |
+| 画图 | [Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo)（Apache 2.0） | 开源 |
+| 听写 | [SenseVoice](https://huggingface.co/FunAudioLLM/SenseVoiceSmall) | 开源 |
+| 朗读 | [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M)（Apache 2.0） | 开源 |
+
+**对话如何变成图片**：模型在回复里写 `<|visual prompt|>描述<|/visual prompt|>`，程序检测到后把描述交给 Z-Image-Turbo。改图时模型写一条新的完整描述，再从头画一张。同一段对话用同一个随机种子，所以小改动时背景基本不变，但做不到像素级不变，因为画图模型看不到上一张图。模型回答“图里有什么”时，读的也是自己写的描述。
+
+**训练数据**（`datagen/synth_t2i_chat.py`）：网上没有找到能直接用的数据，所以约 3 万条对话用模板和 DeepSeek 合成，每类都有程序校验，比如改图后新旧描述的词语重合度、被替换的颜色是否真的消失。训练时混入原有的 SFT 和看图数据（`run_d24_t2i_chat.sh`），以尽量保留原有能力。
+
+**结果**（d24，手写的新问题，top-k 2，每题 3 次，`script/t2i_chat_eval.py`）：
+
+| 指标 | 结果 |
+|---|---|
+| 该画时会画 / 不该画时不画 | 1.00 / 1.00 |
+| 模糊修改（“更可爱”）确实改了描述 | 1.00 |
+| 回到上一版 | 1.00 |
+| 改图正确（关键词规则） | 0.85 |
+| 用户提到的细节都写进描述 | 0.80 |
+| 属性替换（“把车改成黄色”） | 0.78 |
+| 改图时保留的词语比例 | 0.86 |
+
+这些是关键词规则的分数，题量也小，只能作粗略参考。
+
+| 原有能力 | 加入生图前 | 加入生图后 |
+|---|---|---|
+| ChatCORE | 0.250 | 0.252 |
+| ARC-Easy / ARC-Challenge | 0.629 / 0.490 | 0.622 / 0.482 |
+| MMLU | 0.379 | 0.380 |
+| HumanEval | 0.079 | 0.140 |
+| **GSM8K** | 0.173 | **0.138** |
+| 看图（居中准确率均值） | 0.218 | 0.227 |
+
+GSM8K 下降，很可能是因为这轮 SFT 在 RL 之后，冲掉了 RL 的部分收益，这一点没有单独验证过。
+
+**试过但没有采用的**：
+- 自己训练的画图解码器（`model/imagegen.py`）：约 1.45 亿参数的 GPT 预测 LlamaGen VQ token，训练到 12 轮后主体能切题，但结构经常出错（狗腿错乱、多只眼睛）。
+- 自己训练的 thinker-talker 语音（`model/speech.py`）：WER 约 0.46–0.50，真实语音的基准是 0.11。对比 MiniMind-O 后认为主要差在 thinker 冻结，没有继续这条路。
+
+**运行页面**：
+
+```bash
+python -m script.download_image_backend --model=z-image-turbo
+# diffusers 和 Kokoro 的依赖装在训练环境之外，安装命令写在 inference/image_backend.py 和 inference/speech_io.py 开头
+PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 ~/train_llm_pylibs/voice/bin/python -m script.chat_t2i_web \
+    --chat_ckpt=weight/d24/chat_t2i_v5.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
+ssh -L 8765:127.0.0.1:8765 <服务器>   # 然后打开 http://localhost:8765
+```
+
+页面只监听本机地址，没有内容过滤，也没有登录，不要直接暴露到公网。显存约需 27 GB。
+
 ## 快速开始
 
 ```bash
@@ -105,20 +163,21 @@ tokenizer/    分词器和对话模板（带工具调用）
 tasks/        预训练、SFT、评测和 RL 的数据集
 script/       各阶段入口：下载数据、训练、评测、RL、报告
 evaluation/   CORE、bpb、代码执行（HumanEval）、对话采样
-inference/    PyTorch 推理引擎、vLLM 模型适配和采样引擎
-datagen/      用 DeepSeek 生成身份对话和工具调用数据
+inference/    PyTorch 推理引擎、vLLM 适配、对话生图、画图和语音后端
+datagen/      用 DeepSeek 生成身份对话、工具调用和对话生图数据
 common/       路径、checkpoint 工具、report 读写
-run_*.sh      不同硬件配置的完整流程，以及 d24 的 RL 实验脚本
+run_*.sh      不同硬件配置的完整流程，以及 d24 的 RL 和多模态脚本
 ```
 
 ## 后续方向
 
 - RL：增加训练步数，或者跑第二个 epoch（这次只用了 3 万道新题里的约 7500 道）；尝试异步 RL，让采样和训练重叠进行；做工具调用方向的 RL。
 - 用 vLLM 做部署和加速推理。
-- 多模态：接一个预训练的视觉编码器（如 SigLIP），让模型能看懂图片；或者尝试图像 token 生成。
+- 对话生图：接入能看原图的编辑模型，让背景真正保持不变；把生成的图送回 SigLIP，让模型真的看图回答；在最后再跑一轮 RL，找回 GSM8K。
 
 ## 致谢
 
 - [karpathy/nanochat](https://github.com/karpathy/nanochat)：模型结构、优化器、训练流程和评测
-- [jingyaogong/minimind](https://github.com/jingyaogong/minimind)：项目最初的参考
-- 数据集：FineWeb-Edu、SmolTalk、MMLU、GSM8K、NousResearch/hermes-function-calling-v1、nvidia/OpenMathInstruct-2、DCLM CORE eval bundle、ARC、HumanEval
+- [jingyaogong/minimind](https://github.com/jingyaogong/minimind)：项目最初的参考；看图和语音参考了 MiniMind-V、[MiniMind-O](https://github.com/jingyaogong/minimind-o)
+- 模型：SigLIP2、Z-Image-Turbo、SenseVoice、Kokoro、LlamaGen VQ、Mimi
+- 数据集：FineWeb-Edu、SmolTalk、MMLU、GSM8K、NousResearch/hermes-function-calling-v1、nvidia/OpenMathInstruct-2、DCLM CORE eval bundle、ARC、HumanEval、ALLaVA、text-to-image-2M、MiniMind-O dataset

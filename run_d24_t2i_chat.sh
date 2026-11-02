@@ -44,7 +44,7 @@ if [ ! -f "$CKPT.done" ]; then
     touch "$CKPT.done"
 fi
 unset HTTPS_PROXY HTTP_PROXY NO_PROXY
-[ -f "$REPORT/t2i_chat_behaviour.json" ] || CUDA_VISIBLE_DEVICES=$EVAL_GPU python -m script.t2i_chat_eval --ckpt_path=$CKPT \
+[ -f "$REPORT/t2i_chat_behaviour.json" ] || HF_HUB_OFFLINE=1 PYTHONPATH=$HOME/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=$EVAL_GPU python -m script.t2i_chat_eval --ckpt_path=$CKPT \
     --tokenizer_path=$TOKENIZER --report_dir=$REPORT
 [ -f "$REPORT/t2i_chat_vlm.json" ] || CUDA_VISIBLE_DEVICES=$EVAL_GPU python -m script.vlm_eval --ckpt_path=$CKPT \
     --tokenizer_path=$TOKENIZER --stage=t2i_chat_vlm --report_dir=$REPORT

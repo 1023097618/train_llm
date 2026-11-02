@@ -1,17 +1,18 @@
-"""Conversational image generation: the chat model decides to draw by writing <|visual prompt|>...<|/visual prompt|>, then the
-image decoder draws that description. The decoder reads descriptions with its own frozen chat model (the checkpoint it was
-trained with), not with the conversation model, which went on training.
-
-A change to the image is a new full description written by the chat model, drawn from scratch: with the same seed the result
-stays similar at best. The conversation only remembers the descriptions, so questions about an image are answered from them.
+"""Conversational image generation: the chat model decides to draw by writing <|visual prompt|>...<|/visual prompt|>, or to change an
+earlier picture with <|edit prompt|><|image ref|>N<|/image ref|>...<|/edit prompt|>, always with the complete description. The program
+draws it and puts the picture back into the conversation as <|image|><|image ref|>M<|/image ref|><|image pad|>*n<|/image|>: the frozen
+SigLIP2 and the projector turn it into embeddings, so the model sees what it drew like a picture from the user.
 """
+import numpy as np
 import torch
+from PIL import Image
 
 from common import common
-from common.data_paths import T2I_VQ_MODEL
+from common.data_paths import T2I_VQ_MODEL, VLM_ENCODER
 from inference.engine import Engine
 from model import gpt
 from model.imagegen import ImageGen, ImageGenConfig, load_vq
+from model.vision import VisionConfig, VisionTower, preprocess
 from tokenizer import tokenizer
 
 
@@ -56,6 +57,12 @@ class ChatT2I:
         self.device = device
         self.tokeniz = tokenizer.Tokenizer.from_dict(tokenizer_path, device=device)
         self.chat = load_gpt(chat_ckpt, self.tokeniz, device)
+        ckpt = torch.load(chat_ckpt, map_location="cpu", weights_only=False)
+        self.vision_config = VisionConfig(**{**ckpt.get("vision_config", {}), "encoder_path": str(VLM_ENCODER)})
+        self.vision = VisionTower(self.vision_config, self.chat.config.model_dim, device)
+        self.vision.projector.load_state_dict(ckpt["projector_state"])
+        self.vision.requires_grad_(False).eval()
+        del ckpt
         self.engine = Engine(self.chat, self.tokeniz, device)
         self.decoder = None
         if decoder_ckpt:
@@ -66,9 +73,23 @@ class ChatT2I:
             self.decoder.eval()
             self.vq = load_vq(vq_dir, device)
 
-    def reply(self, messages, top_k=2, max_new_tokens=200):  # top_k 2 keeps edits faithful (82% of the words, 8 keeps 71%), first pictures still differ
-        """messages end with the user's turn -> the assistant message to append to them, and its description or None. A picture gets
-        the next number in an image_id part; an edit's source picture is in its i2i_prompt part, clamped to pictures that exist."""
+    @torch.no_grad()
+    def seen_pictures(self, history, tokens, pictures):
+        """GPT media_embeds for the image parts of the rendered history; pictures: {number: uint8 array}, a lost one is plain gray"""
+        arrays = []
+        for m in history:
+            if isinstance(m["content"], list):
+                for p in m["content"]:
+                    if p["type"] == "image":
+                        arrays.append(pictures.get(int(p["image_ref"]), np.full((256, 256, 3), 128, dtype=np.uint8)))
+        if not arrays:
+            return None
+        pixels = preprocess([Image.fromarray(a) for a in arrays], self.vision_config.image_size).to(self.device)
+        return self.vision.image_embeds(torch.tensor([tokens], device=self.device), pixels, self.chat.config.model_dim, self.tokeniz.special_token["<|image pad|>"])
+
+    def reply(self, messages, pictures=None, top_k=2, max_new_tokens=200):  # top_k 2 keeps edits faithful (82% of the words, 8 keeps 71%), first pictures still differ
+        """messages end with the user's turn, pictures holds the earlier ones -> the assistant message to append, and its description or
+        None. The new picture gets the next number in an image part; an edit's source is in its i2i_prompt part, clamped to pictures that exist."""
         special = self.tokeniz.special_token
         history = list(messages)
         while True:
@@ -77,12 +98,13 @@ class ChatT2I:
                 break
             history = history[2:]  # the oldest exchange goes first
         parts = [p for m in messages if isinstance(m["content"], list) for p in m["content"]]
-        count = sum(p["type"] == "image_id" for p in parts)
+        count = sum(p["type"] == "image" for p in parts)
+        embeds = self.seen_pictures(history, tokens, pictures or {})
         previous = [p["content"] for p in parts if p["type"] in ("t2i_prompt", "i2i_prompt")]
         stops = {special["<|/assistant|>"], special["<|image|>"]}
         for _ in range(3):  # a description repeated word for word draws the same picture while claiming a change
             out = []
-            stream = self.engine.generate(torch.tensor(tokens, device=self.device), 1, k=top_k, max_len=len(tokens) + max_new_tokens + 8)
+            stream = self.engine.generate(torch.tensor(tokens, device=self.device), 1, k=top_k, max_len=len(tokens) + max_new_tokens + 8, media_embeds=embeds)
             for _ in range(max_new_tokens):
                 token = int(next(stream)[0][0])
                 out.append(token)
@@ -99,7 +121,7 @@ class ChatT2I:
                 content.append({"type": "i2i_prompt", "image_ref": str(ref), "content": prompt})
             else:
                 content.append({"type": "t2i_prompt", "content": prompt})
-            content.append({"type": "image_id", "image_ref": str(count)})
+            content.append({"type": "image", "length": self.vision_config.tokens_per_image, "image_ref": str(count)})
         return {"role": "assistant", "content": content}, prompt
 
     @torch.no_grad()

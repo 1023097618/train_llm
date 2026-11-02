@@ -114,19 +114,19 @@ def page():
 @app.post("/chat")
 def turn(request: Turn):
     with lock:
-        message, prompt = chat.reply(request.messages)
+        store = pictures.setdefault(request.seed, {})
+        message, prompt = chat.reply(request.messages, {number: picture[0] for number, picture in store.items()})
         image = None
         if prompt:
             parts = {p["type"]: p for p in message["content"]}
             seed = request.seed or random.randrange(10 ** 6)
-            store = pictures.setdefault(request.seed, {})
             source = store.get(int(parts["i2i_prompt"]["image_ref"])) if "i2i_prompt" in parts else None
             # a turn without its picture (the page restarted, or our own decoder) draws from the description alone
             if source and source[1] == prompt:  # going back to that picture
                 array = source[0]
             else:
                 array = back.edit(source[0], prompt, source[1], seed=seed) if source and back else draw(prompt, seed=seed)
-            store[int(parts["image_id"]["image_ref"])] = (array, prompt)
+            store[int(parts["image"]["image_ref"])] = (array, prompt)
             while len(pictures) > 20:
                 pictures.pop(next(iter(pictures)))
             buffer = io.BytesIO()

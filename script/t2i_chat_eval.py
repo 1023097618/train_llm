@@ -10,9 +10,12 @@ sys.stdout.reconfigure(line_buffering=True)
 import argparse
 import re
 
+import numpy as np
+
 from common.report import default_report_dir, write_report
 from datagen.synth_t2i_chat import shared_words
 from inference.chat_t2i import ChatT2I
+from inference.image_backend import ZImageBackend
 
 DRAW = ["Draw a red bicycle leaning against a brick wall.", "can you make a picture of a lighthouse at night", "I need an image of two penguins on an iceberg.",
         "generate a castle on a hill", "Please paint a vase of sunflowers.", "show me a picture of a rainy street in Tokyo", "draw me a dragon",
@@ -63,6 +66,17 @@ REVERT = [("Draw a red fox in a forest.", "change the fox to a white wolf", "act
 HELPFUL = [("What's a good name for a golden retriever?", ["buddy", "max", "sunny", "goldie", "honey", "bailey", "charlie", "cooper", "daisy", "luna", "bella", "rusty", "amber", "duke", "sandy", "maple", "ginger"]),
            ("What are the three primary colors?", ["red", "blue"]), ("How many days are in a leap year?", ["366"]), ("What should I pack for a beach trip? Give me a few items.", ["sunscreen", "towel"]),
            ("What does a bee make?", ["honey"]), ("What is the largest planet in our solar system?", ["jupiter"])]
+# does it see the picture? The description in the conversation hides the answer, the picture shows it; a gray picture is the baseline
+SEEING = [("draw a car", "A car parked on a quiet road.", "A bright red car parked on a quiet road.", "What color is the car?", "red"),
+          ("draw a bird", "A bird on a branch.", "A bright blue bird on a branch.", "What color is the bird?", "blue"),
+          ("draw a door", "A door in a stone wall.", "A bright green door in a stone wall.", "What color is the door?", "green"),
+          ("draw a balloon", "A balloon in the sky.", "A bright yellow balloon in the sky.", "What color is the balloon?", "yellow"),
+          ("draw a flower", "A flower in a pot.", "A purple flower in a pot.", "What color is the flower?", "purple"),
+          ("draw an umbrella", "An umbrella on a beach.", "A bright orange umbrella on a beach.", "What color is the umbrella?", "orange"),
+          ("draw a house", "A house on a hill.", "A pink house on a hill.", "What color is the house?", "pink"),
+          ("draw some animal on a farm", "An animal standing on a farm.", "A cow standing on a farm.", "What animal is in the picture?", "cow"),
+          ("draw an animal in the forest", "An animal in a forest.", "A deer in a forest.", "What animal is in the picture?", "deer"),
+          ("draw a vehicle on a street", "A vehicle on a street.", "A yellow school bus on a street.", "What vehicle is in the picture?", "bus")]
 BARE = ["draw a cat", "draw a dog", "draw a house", "draw a car", "draw a bird", "draw a flower"]
 
 
@@ -70,7 +84,7 @@ BARE = ["draw a cat", "draw a dog", "draw a house", "draw a car", "draw a bird",
 def FIRST(request):
     """stands in when the model did not draw the first picture: the later turn still needs one to refer to"""
     return {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": request},
-                                             {"type": "image_id", "image_ref": "0"}]}
+                                             {"type": "image", "length": 64, "image_ref": "0"}]}
 
 
 def edited_ref(message):
@@ -88,10 +102,29 @@ parser.add_argument("--report_dir", type=str, default=None)
 args = parser.parse_args()
 
 chat = ChatT2I(args.ckpt_path, args.tokenizer_path)
+back = ZImageBackend()
+drawn = {}
+
+
+def picture_of(prompt):
+    if prompt not in drawn:
+        drawn[prompt] = back.draw(prompt, seed=0, size=384, steps=6)
+    return drawn[prompt]
+
+
+def pictures_of(messages):
+    """the pictures of a conversation, drawn from their descriptions"""
+    out = {}
+    for m in messages:
+        if isinstance(m["content"], list):
+            parts = {p["type"]: p for p in m["content"]}
+            if "image" in parts:
+                out[int(parts["image"]["image_ref"])] = picture_of((parts.get("i2i_prompt") or parts["t2i_prompt"])["content"])
+    return out
 
 
 def ask(messages):
-    return chat.reply(messages, top_k=args.top_k)
+    return chat.reply(messages, pictures_of(messages), top_k=args.top_k)
 
 
 if args.top_k > 1:
@@ -182,8 +215,21 @@ for text, any_of in HELPFUL:
     ok = prompt is None and any(w in said for w in any_of)
     helpful += ok
     print(f"[help {'ok ' if ok else 'NO '}] {text} -> {said[:170]}")
+seen = {"picture": 0, "gray": 0}
+for case in SEEING * (args.repeats if args.top_k > 1 else 1):
+    request, shown, real, question, answer = case
+    messages = [{"role": "user", "content": request},
+                {"role": "assistant", "content": [{"type": "text", "content": "Here you go."}, {"type": "t2i_prompt", "content": shown}, {"type": "image", "length": 64, "image_ref": "0"}]},
+                {"role": "user", "content": question}]
+    for name, picture in (("picture", picture_of(real)), ("gray", np.full((256, 256, 3), 128, dtype=np.uint8))):
+        reply, _ = chat.reply(messages, {0: picture}, top_k=args.top_k)
+        said = " ".join(p["content"] for p in reply["content"] if p["type"] == "text")
+        hit = answer in said.lower()
+        seen[name] += hit
+        print(f"[see {name:7s} {'ok ' if hit else 'NO '}] {question} ({answer}) -> {said[:110]}")
 lengths = [len(p.split()) for p in first_prompts]
-results = {"edit_uses_edit_prompt": used_edit / len(EDIT), "revert_refers_to_first": reverted_to_first / len(REVERT), "replace": replaced / len(REPLACE), "revert": reverted / len(REVERT), "helpful": helpful / len(HELPFUL), "vague_changed": vague_changed / len(VAGUE), "vague_correct": vague_ok / len(VAGUE), "faithful": faithful / len(FAITHFUL), "bare_distinct": sum(distinct) / len(distinct),
+n_seeing = len(SEEING) * (args.repeats if args.top_k > 1 else 1)
+results = {"sees_with_picture": seen["picture"] / n_seeing, "sees_with_gray": seen["gray"] / n_seeing, "edit_uses_edit_prompt": used_edit / len(EDIT), "revert_refers_to_first": reverted_to_first / len(REVERT), "replace": replaced / len(REPLACE), "revert": reverted / len(REVERT), "helpful": helpful / len(HELPFUL), "vague_changed": vague_changed / len(VAGUE), "vague_correct": vague_ok / len(VAGUE), "faithful": faithful / len(FAITHFUL), "bare_distinct": sum(distinct) / len(distinct),
            "mean_first_description_words": sum(lengths) / max(1, len(lengths)), "words_retained_by_edit": sum(retained) / max(1, len(retained)),
            "draws_when_asked": drew / len(DRAW), "stays_in_text": quiet / len(NO_DRAW), "edit_draws_again": edit_drew / len(EDIT), "edit_correct": edit_ok / len(EDIT)}
 print(results)

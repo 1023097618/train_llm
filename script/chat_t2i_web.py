@@ -122,7 +122,10 @@ def turn(request: Turn):
             store = pictures.setdefault(request.seed, {})
             source = store.get(int(parts["i2i_prompt"]["image_ref"])) if "i2i_prompt" in parts else None
             # a turn without its picture (the page restarted, or our own decoder) draws from the description alone
-            array = back.edit(source[0], prompt, source[1], seed=seed) if source and back else draw(prompt, seed=seed)
+            if source and source[1] == prompt:  # going back to that picture
+                array = source[0]
+            else:
+                array = back.edit(source[0], prompt, source[1], seed=seed) if source and back else draw(prompt, seed=seed)
             store[int(parts["image_id"]["image_ref"])] = (array, prompt)
             while len(pictures) > 20:
                 pictures.pop(next(iter(pictures)))

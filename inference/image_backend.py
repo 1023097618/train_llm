@@ -32,7 +32,7 @@ class ZImageBackend:
         inputs = self.judge_inputs(text=[prompt, previous_prompt], images=[image], padding="max_length", max_length=64, truncation=True, return_tensors="pt").to(self.device)
         inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
         scores = self.judge(**inputs).logits_per_image[0].float()
-        return scores[0] > scores[1]
+        return scores[0] - scores[1] > 1.0  # a whole car still red except a green streak scores +0.25, changes that worked from +1.6 up
 
     @torch.inference_mode()
     def edit(self, image, prompt, previous_prompt, seed=0, size=768, steps=9, check=True):

@@ -24,8 +24,8 @@ EVAL_GPU=${GPUS%%,*}
 WEIGHT_DIR=weight/d24
 TOKENIZER=$WEIGHT_DIR/tokenizer.pkl
 BASE_CKPT=${BASE_CKPT:-$WEIGHT_DIR/chat_t2i_v7.ckpt}
-CKPT=${CKPT:-$WEIGHT_DIR/chat_t2i_v8.ckpt}
-REPORT=${REPORT:-$WEIGHT_DIR/report_t2i_chat_v8}
+CKPT=${CKPT:-$WEIGHT_DIR/chat_t2i_v9.ckpt}
+REPORT=${REPORT:-$WEIGHT_DIR/report_t2i_chat_v9}
 D=data/raw/custom
 mkdir -p "$REPORT" log
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -42,11 +42,19 @@ if [ ! -f "$CKPT.done" ]; then
     CUDA_VISIBLE_DEVICES=$GPUS torchrun --standalone --nproc_per_node=$(echo "$GPUS" | tr ',' '\n' | wc -l) -m script.train_vlm --stage=sft \
         --ckpt_path=$BASE_CKPT --tokenizer_path=$TOKENIZER --save_ckpt_path=$CKPT $resume \
         --t2i_chat_path=data/raw/custom/t2i_chat_text.jsonl --t2i_chat_epochs=2 --caption_weight=0.1 --instruct_weight=0.25 --text_weight=0.45 --chat_weight=0.2 \
-        --identity_paths=$D/identity_conversations_en_d24.jsonl:3,$D/identity_qa_d24.jsonl:10,$D/identity_direct_d24.jsonl:15 \
-        --llm_lr_frac=0.03 --max_steps=300 --eval_every=50 --save_every=50
+        --identity_paths=$D/identity_conversations_en_d24.jsonl:2,$D/identity_qa_d24.jsonl:5,$D/identity_direct_d24.jsonl:8 \
+        --llm_lr_frac=0.015 --max_steps=300 --eval_every=50 --save_every=50
     touch "$CKPT.done"
 fi
 unset HTTPS_PROXY HTTP_PROXY NO_PROXY
+# the best validation loss says nothing about what this round is for, and came at step 50: evaluate the last step
+[ -f "$CKPT.last" ] || python - "$CKPT" <<'PY'
+import sys
+import torch
+state = torch.load(sys.argv[1] + ".state", map_location="cpu", weights_only=False)
+torch.save({k: v for k, v in state.items() if k not in ("optimizer_state", "loader_state", "best_val", "wandb_id")}, sys.argv[1] + ".last")
+PY
+CKPT=$CKPT.last
 [ -f "$REPORT/t2i_chat_behaviour.json" ] || HF_HUB_OFFLINE=1 PYTHONPATH=$HOME/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=$EVAL_GPU python -m script.t2i_chat_eval --ckpt_path=$CKPT \
     --tokenizer_path=$TOKENIZER --report_dir=$REPORT
 [ -f "$REPORT/t2i_chat_vlm.json" ] || CUDA_VISIBLE_DEVICES=$EVAL_GPU python -m script.vlm_eval --ckpt_path=$CKPT \

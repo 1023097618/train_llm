@@ -160,17 +160,9 @@ ssh -L 8765:127.0.0.1:8765 <服务器>   # 然后打开 http://localhost:8765
 | 内容 | 地址 | 下载 |
 |---|---|---|
 | 最终模型 `chat_t2i_v9.ckpt` 和分词器 | [zhvhabqifova/guangmingxing-d24](https://huggingface.co/zhvhabqifova/guangmingxing-d24) | `--what=weights` |
-| 各阶段的模型：预训练、文本 RL、看图的 align / sft / RL | 同上 | `--what=stages` |
 | 合成的对话、画好的图、看图问答 | [zhvhabqifova/guangmingxing-d24-data](https://huggingface.co/datasets/zhvhabqifova/guangmingxing-d24-data) | `--what=data` |
 
-**各阶段的关系**：
-
-```text
-pretrained_model ─→ SFT ─┬→ rl_omi_model_step210（文本 RL，GSM8K 0.178）
-                         └→ vlm_align → vlm_sft2 → vlm_rl → chat_t2i_v9（最终模型）
-```
-
-d24 的 SFT 模型和 SFT 训练状态只存在训练服务器上，服务器硬盘出故障后没能取出来，所以没有公开；要从这一步开始，可以用 `script/train_sft.py` 从 `pretrained_model.ckpt` 重新训练（`run_2gpu_d24.sh` 里的 SFT 阶段），结果会和原来的有出入。
+只公开了最终模型，中间阶段（预训练、SFT、RL、看图的各轮）没有公开，从头复现要按“训练流程”依次跑。
 
 **数据**（`--what=data`）：
 

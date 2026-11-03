@@ -147,11 +147,45 @@ GSM8K 下降，很可能是因为这轮 SFT 在 RL 之后，冲掉了 RL 的部�
 python -m script.download_image_backend --model=z-image-turbo
 # diffusers 和 Kokoro 的依赖装在训练环境之外，安装命令写在 inference/image_backend.py 和 inference/speech_io.py 开头
 PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 ~/train_llm_pylibs/voice/bin/python -m script.chat_t2i_web \
-    --chat_ckpt=weight/d24/chat_t2i_v7.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
+    --chat_ckpt=weight/d24/chat_t2i_v9.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
 ssh -L 8765:127.0.0.1:8765 <服务器>   # 然后打开 http://localhost:8765
 ```
 
 页面只监听本机地址，没有内容过滤，也没有登录，不要直接暴露到公网。显存约需 28 GB。
+
+## 公开的权重和数据
+
+权重和本项目自己生成的数据都放在 Hugging Face 上，用 `python -m script.download_release` 下载到脚本默认读取的位置：
+
+| 内容 | 地址 | 下载 |
+|---|---|---|
+| 最终模型 `chat_t2i_v9.ckpt` 和分词器 | [zhvhabqifova/guangmingxing-d24](https://huggingface.co/zhvhabqifova/guangmingxing-d24) | `--what=weights` |
+| 各阶段的模型：预训练、文本 RL、看图的 align / sft / RL | 同上 | `--what=stages` |
+| 合成的对话、画好的图、看图问答 | [zhvhabqifova/guangmingxing-d24-data](https://huggingface.co/datasets/zhvhabqifova/guangmingxing-d24-data) | `--what=data` |
+
+**各阶段的关系**：
+
+```text
+pretrained_model ─→ SFT ─┬→ rl_omi_model_step210（文本 RL，GSM8K 0.178）
+                         └→ vlm_align → vlm_sft2 → vlm_rl → chat_t2i_v9（最终模型）
+```
+
+d24 的 SFT 模型和 SFT 训练状态只存在训练服务器上，服务器硬盘出故障后没能取出来，所以没有公开；要从这一步开始，可以用 `script/train_sft.py` 从 `pretrained_model.ckpt` 重新训练（`run_2gpu_d24.sh` 里的 SFT 阶段），结果会和原来的有出入。
+
+**数据**（`--what=data`）：
+
+| 文件 | 条数 | 生成方式 |
+|---|---|---|
+| `custom/identity_conversations_en_d24.jsonl` | 3349 | `datagen/update_identity.py`，DeepSeek |
+| `custom/identity_qa_d24.jsonl` | 526 | `datagen/synth_identity_qa.py`，DeepSeek |
+| `custom/identity_direct_d24.jsonl` | 2041 | `datagen/synth_identity_qa.py --direct=1`，各种直接问身份的说法 |
+| `custom/toolcall_synth.jsonl` | 991 | `datagen/synth_toolcall.py`，DeepSeek |
+| `custom/t2i_chat.jsonl` | 31348 | `datagen/synth_t2i_chat.py`：模板和 DeepSeek 合成的画图、改图、聊天对话 |
+| `custom/t2i_chat_text.jsonl` | 6479 | `script/render_chat_images.py` 拆出的不画图的对话 |
+| `processed/chat/*.parquet` | 34000 条对话，44011 张图 | `script/render_chat_images.py`：对话里的图用 Z-Image-Turbo 画好，加上 ALLaVA 图片的“先画再看” |
+| `processed/chat_labels/*.json` | 7073 组 | `datagen/label_chat_images.py`：DeepSeek 看着图写的问答 |
+
+其余数据（FineWeb-Edu、SmolTalk、ALLaVA 等）都是公开数据集，由 `script/download_*.py` 下载、`script/prepare_*.py` 处理。用 DeepSeek 重新生成数据需要自己的 API key，结果和这里公开的不会完全相同。
 
 ## 快速开始
 

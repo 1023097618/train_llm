@@ -91,14 +91,24 @@ RL 阶段，vLLM 和参考模型放在一张卡上，训练模型放在另一张
 | 听写 | [SenseVoice](https://huggingface.co/FunAudioLLM/SenseVoiceSmall) | 开源 |
 | 朗读 | [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M)（Apache 2.0） | 开源 |
 
-**一轮画图对话**（`inference/chat_t2i.py`、`tokenizer/tokenizer.py`）：
+**画图和改图在对话里怎么表示**（`inference/chat_t2i.py`、`tokenizer/tokenizer.py`）：模型不直接生成图片，而是在回复里用几个特殊 token 写出“画什么”或“改哪张、改成什么”，程序据此调用 Z-Image-Turbo，再把图片放回对话。下面是先画一张、再改它的两轮对话：
 
 ```text
+<|user|>draw a red car on a road<|/user|>
+<|assistant|>Here is a red car on a road.
+<|visual prompt|>A red car on a road.<|/visual prompt|>                                 模型写：画一张新图，以及它的描述
+<|image|><|image ref|>0<|/image ref|><|image pad|>×64<|/image|><|/assistant|>        程序放回：这张图编号 0，以及图片本身
 <|user|>make the car green<|/user|>
 <|assistant|>The car is now green.
-<|edit prompt|><|image ref|>0<|/image ref|>A green car on a road.<|/edit prompt|>      模型写：改第 0 张，以及完整的新描述
-<|image|><|image ref|>1<|/image ref|><|image pad|>×64<|/image|><|/assistant|>          程序放回：新图的编号和图片
+<|edit prompt|><|image ref|>0<|/image ref|>A green car on a road.<|/edit prompt|>    模型写：改第 0 张，以及改完后的完整描述
+<|image|><|image ref|>1<|/image ref|><|image pad|>×64<|/image|><|/assistant|>        程序放回：新图编号 1，以及图片本身
 ```
+
+| token | 谁写 | 含义 |
+|---|---|---|
+| `<\|visual prompt\|>…<\|/visual prompt\|>` | 模型 | 画一张新图，里面是完整的英文描述 |
+| `<\|edit prompt\|>…<\|/edit prompt\|>` | 模型 | 改一张已有的图，先用 `<\|image ref\|>` 写要改第几张，再写改完后的完整描述（不是“把车改成绿色”这样的差量指令） |
+| `<\|image\|>…<\|/image\|>` | 程序 | 画好的图片：`<\|image ref\|>` 里是程序分配的编号，从 0 开始递增，后面 64 个 `<\|image pad\|>` 是图片占位 |
 
 - **看图**：SigLIP2 把图片变成 64 个向量，替换 `<|image pad|>` 位置的 embedding，所以模型能看到自己画的图，而不只是描述。
 - **改图**：程序按编号找到原图，连同新描述交给 Z-Image-Turbo 做图生图。没有一个固定强度适合所有改动，所以从低强度开始，每次用 SigLIP2 判断结果是否更像新描述，不够就加大（`inference/image_backend.py`）。图生图会轻微改动整张图，背景不是像素级不变。

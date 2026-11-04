@@ -105,14 +105,27 @@ open-source models:
 | Speech to text | [SenseVoice](https://huggingface.co/FunAudioLLM/SenseVoiceSmall) | open source |
 | Text to speech | [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache 2.0) | open source |
 
-**One drawing turn** (`inference/chat_t2i.py`, `tokenizer/tokenizer.py`):
+**How drawing and changing pictures look in a conversation** (`inference/chat_t2i.py`, `tokenizer/tokenizer.py`): the
+model does not produce pixels. In its reply it writes, with a few special tokens, what to draw or which picture to change
+and into what; the program calls Z-Image-Turbo and puts the picture back into the conversation. Two turns, first drawing a
+picture and then changing it:
 
 ```text
+<|user|>draw a red car on a road<|/user|>
+<|assistant|>Here is a red car on a road.
+<|visual prompt|>A red car on a road.<|/visual prompt|>                                 the model writes: draw a new picture, its description
+<|image|><|image ref|>0<|/image ref|><|image pad|>×64<|/image|><|/assistant|>        the program puts back: this is picture 0, and the picture
 <|user|>make the car green<|/user|>
 <|assistant|>The car is now green.
-<|edit prompt|><|image ref|>0<|/image ref|>A green car on a road.<|/edit prompt|>      the model writes: change picture 0, the complete new description
-<|image|><|image ref|>1<|/image ref|><|image pad|>×64<|/image|><|/assistant|>          the program puts back: the new picture's number and the picture
+<|edit prompt|><|image ref|>0<|/image ref|>A green car on a road.<|/edit prompt|>    the model writes: change picture 0, the complete new description
+<|image|><|image ref|>1<|/image ref|><|image pad|>×64<|/image|><|/assistant|>        the program puts back: the new picture is 1, and the picture
 ```
+
+| token | written by | meaning |
+|---|---|---|
+| `<\|visual prompt\|>…<\|/visual prompt\|>` | model | draw a new picture; holds the complete English description |
+| `<\|edit prompt\|>…<\|/edit prompt\|>` | model | change an existing picture: first which one, in `<\|image ref\|>`, then the complete description after the change (not an instruction like "make the car green") |
+| `<\|image\|>…<\|/image\|>` | program | a drawn picture: `<\|image ref\|>` holds the number the program gave it, counting from 0, then 64 `<\|image pad\|>` placeholders for the picture |
 
 - **Seeing**: SigLIP2 turns the picture into 64 vectors that replace the embeddings at the `<|image pad|>` positions, so the
   model sees what it drew, not only the description.

@@ -10,7 +10,13 @@
 
 ![对话页面：自我介绍，画一只猫，改成橙色、改成夜晚、戴上红帽子，再问窗框是什么颜色](docs/demo.gif)
 
-语音输入和朗读回复的演示（有声音）：[docs/voice_demo.mp4](docs/voice_demo.mp4)
+语音输入和朗读回复的演示（有声音）：
+
+
+
+https://github.com/user-attachments/assets/e6dec5dc-ca50-46ee-a1c4-30a7ca3b3202
+
+
 
 ## 结果
 

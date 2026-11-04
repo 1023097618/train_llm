@@ -8,10 +8,9 @@ import torch
 from PIL import Image
 
 from common import common
-from common.data_paths import T2I_VQ_MODEL, VLM_ENCODER
+from common.data_paths import VLM_ENCODER
 from inference.engine import Engine
 from model import gpt
-from model.imagegen import ImageGen, ImageGenConfig, load_vq
 from model.vision import VisionConfig, VisionTower, preprocess
 from tokenizer import tokenizer
 
@@ -53,7 +52,7 @@ def parse_reply(tokens, special, decode):
 
 
 class ChatT2I:
-    def __init__(self, chat_ckpt, tokenizer_path, decoder_ckpt=None, vq_dir=str(T2I_VQ_MODEL), device="cuda:0"):
+    def __init__(self, chat_ckpt, tokenizer_path, device="cuda:0"):
         self.device = device
         self.tokeniz = tokenizer.Tokenizer.from_dict(tokenizer_path, device=device)
         self.chat = load_gpt(chat_ckpt, self.tokeniz, device)
@@ -64,14 +63,6 @@ class ChatT2I:
         self.vision.requires_grad_(False).eval()
         del ckpt
         self.engine = Engine(self.chat, self.tokeniz, device)
-        self.decoder = None
-        if decoder_ckpt:
-            ckpt = torch.load(decoder_ckpt, map_location="cpu", weights_only=False)
-            self.thinker = load_gpt(ckpt["thinker_ckpt"], self.tokeniz, device)
-            self.decoder = ImageGen(ImageGenConfig(**ckpt["config"]), self.thinker.config.model_dim, device)
-            self.decoder.load_state_dict(ckpt["model_state"])
-            self.decoder.eval()
-            self.vq = load_vq(vq_dir, device)
 
     @torch.no_grad()
     def seen_pictures(self, history, tokens, pictures):
@@ -123,13 +114,3 @@ class ChatT2I:
                 content.append({"type": "t2i_prompt", "content": prompt})
             content.append({"type": "image", "length": self.vision_config.tokens_per_image, "image_ref": str(count)})
         return {"role": "assistant", "content": content}, prompt
-
-    @torch.no_grad()
-    def draw(self, prompt, seed=0, cfg_scale=7.5, temperature=0.9):
-        """uint8 array (H, W, 3)"""
-        special = self.tokeniz.special_token
-        ids = [special["<|user|>"]] + self.tokeniz.encode_ordinary(prompt) + [special["<|/user|>"]]
-        ids = ids[:self.decoder.config.prefix_capacity]
-        hidden = self.thinker(torch.tensor([ids], device=self.device), hidden_layer=self.thinker.config.n_layer - 1, hidden_only=True).hidden
-        generator = torch.Generator(device=self.device).manual_seed(seed)
-        return self.vq(self.decoder.sample(hidden, temperature=temperature, cfg_scale=cfg_scale, generator=generator))

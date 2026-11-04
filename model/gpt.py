@@ -70,7 +70,7 @@ def has_ve(layer_idx,n_layer):
 class GPTOutPut:
     logit:torch.Tensor=None
     loss:torch.Tensor=None
-    hidden:torch.Tensor=None # output of block hidden_layer (the talker's input, model/speech.py)
+    hidden:torch.Tensor=None # output of block hidden_layer
 
 
 class KVCache:
@@ -277,7 +277,7 @@ class GPT(nn.Module):
 
     def forward(self,x,y=None,kv_cache:KVCache=None,reduction:Literal['mean','none']='mean',segment_ids:torch.Tensor=None,media_embeds:torch.Tensor=None,hidden_layer:int=None,hidden_only:bool=False):
         """media_embeds (B,T,C): replaces the token embedding wherever x is <|image pad|> or <|audio pad|> (built by
-        model/vision.py and model/speech.py; a dense tensor instead of a variable number of tokens keeps torch.compile
+        model/vision.py; a dense tensor instead of a variable number of tokens keeps torch.compile
         shapes static). hidden_layer: also return that block's output; hidden_only: stop right there"""
         T_curr = x.shape[-1]
         nowT = T_curr if kv_cache is None else T_curr + kv_cache.T_pre

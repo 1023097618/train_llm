@@ -2,7 +2,7 @@ import torch
 import math
 import torch.distributed as dist
 from typing import List,Dict
-# the fused functions recompile for every parameter shape, the talker has more than the default limit of 8
+# the fused functions recompile for every parameter shape, more shapes than the default limit of 8
 torch._dynamo.config.recompile_limit = 32
 
 @torch.compile(dynamic=False,fullgraph=True)

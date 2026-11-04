@@ -1,4 +1,4 @@
-"""English captions of the 256x256 VQ token data (the thinker only understands English; about 3/4 of the captions are
+"""English captions for the drawing conversations of datagen/synth_t2i_chat.py, from the 256x256 VQ token data (the chat model only understands English; about 3/4 of the captions are
 Chinese). Shuffled shards data/processed/t2i_en256/en256-NNNNN.parquet of {caption, vq_token_bytes}, the last is validation.
 
 usage:

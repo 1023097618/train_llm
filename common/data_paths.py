@@ -4,14 +4,9 @@ from pathlib import Path
 
 DATA_ROOT = Path("data")
 RAW_ROOT = DATA_ROOT / "raw"
-INTERIM_ROOT = DATA_ROOT / "interim"
 PROCESSED_ROOT = DATA_ROOT / "processed"
-PREVIEW_ROOT = DATA_ROOT / "previews"
-MANIFEST_ROOT = DATA_ROOT / "manifests"
 
-RAW_TEXT_MINIMIND = RAW_ROOT / "text" / "minimind"
 RAW_CUSTOM = RAW_ROOT / "custom"
-RAW_SYNTHETIC = RAW_ROOT / "synthetic"
 PRETRAIN_T2T = PROCESSED_ROOT / "pretrain" / "t2t"
 # nanochat 的 SFT 数据，由 script/download_sft.py 下载，目录结构与 HF 仓库一致
 RAW_SFT = RAW_ROOT / "sft"
@@ -30,17 +25,14 @@ VLM_DATA = PROCESSED_ROOT / "vlm"                # English subset, shuffled shar
 VLM_ENCODER = RAW_VLM / "siglip2-base-patch16-256"
 VLM_EVAL = RAW_VLM / "eval"                      # MMStar, AI2D, ScienceQA-IMG, MMBench
 
-# speech in / out (script/download_audio.py)
+# speech in / out of the chat page (script/download_audio.py)
 RAW_AUDIO = RAW_ROOT / "audio"
-AUDIO_MINIMIND_O = RAW_AUDIO / "minimind-o"      # English t2a / a2a mini sets, speech stored as Mimi codes
-AUDIO_MIMI = RAW_AUDIO / "mimi"                  # kyutai/mimi codec, 8 codebooks at 12.5 Hz, 24 kHz audio
-AUDIO_SENSEVOICE = RAW_AUDIO / "SenseVoiceSmall" # frozen speech encoder (input side)
-AUDIO_DATA = PROCESSED_ROOT / "audio"            # shuffled shards, a2a with SenseVoice features (prepare_audio_data.py)
+AUDIO_SENSEVOICE = RAW_AUDIO / "SenseVoiceSmall" # writes down what the user says
+AUDIO_KOKORO = RAW_AUDIO / "kokoro"              # reads the replies aloud
 
-# image generation (script/prepare_t2i_data.py)
+# image generation: captions for the drawing conversations (script/prepare_t2i_data.py), the model that draws
 RAW_T2I = RAW_ROOT / "t2i"
-T2I_RAW_VQ = RAW_T2I / "vq256"                    # caption + LlamaGen VQ-16 tokens of 256x256 images (text-to-image-2M)
-T2I_VQ_MODEL = RAW_T2I / "llamagen-vq"            # the VQ decoder
+T2I_RAW_VQ = RAW_T2I / "vq256"                    # captions of 256x256 images (text-to-image-2M)
 T2I_DATA = PROCESSED_ROOT / "t2i_en256"           # English captions only, shuffled shards
 IMAGE_BACKEND = RAW_T2I / "z-image-turbo"         # the open-source model that draws in the conversation
 
@@ -53,10 +45,3 @@ SFT_IDENTITY = RAW_CUSTOM / "identity_conversations_en_d20.jsonl"
 SFT_IDENTITY_QA = RAW_CUSTOM / "identity_qa_d20.jsonl"  # 短的身份问答（你是谁 / 你是 ChatGPT 吗）
 SFT_TOOLCALL_SYNTH = RAW_CUSTOM / "toolcall_synth.jsonl"  # 参数纠错重试 / 缺参数先追问 / 连续调用 / 不该调用
 SFT_T2I_CHAT = RAW_CUSTOM / "t2i_chat.jsonl"  # 对话式生图：什么时候画、怎么写描述、连续改图、不该画
-SFT_T2A = PROCESSED_ROOT / "sft" / "t2a"
-SFT_A2A = PROCESSED_ROOT / "sft" / "a2a"
-SFT_I2T = PROCESSED_ROOT / "sft" / "i2t"
-SFT_T2I = PROCESSED_ROOT / "sft" / "t2i"
-ALIGNMENT = PROCESSED_ROOT / "alignment"
-TTS_CACHE = INTERIM_ROOT / "audio" / "tts_cache"
-IDENTITY_PREVIEWS = PREVIEW_ROOT / "identity_audio"

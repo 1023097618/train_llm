@@ -31,7 +31,8 @@
 ## 训练流程
 
 ```
-分词器 → 预训练 → base 评测 → SFT → chat 评测 → RL → chat 评测 → report
+分词器 → 预训练 → base 评测 → SFT → chat 评测 → RL → chat 评测 → report         （run_2gpu_d24.sh）
+SFT → 看图 align → 看图 SFT → 看图 RL → 对话生图两轮 → 最终模型 chat_t2i_v9       （run_d24_vlm*.sh、run_d24_t2i_chat.sh）
 ```
 
 | 阶段 | 脚本 | 数据 / 内容 |
@@ -43,6 +44,8 @@
 | chat 评测 | `script/chat_eval.py` | ARC-Easy/Challenge、MMLU、GSM8K、HumanEval、ChatCORE |
 | RL | `script/chat_rl.py` | GSM8K 风格的数学题，奖励是答案对就得分；采样时可以调用计算器 |
 | 报告 | `script/report.py` | 汇总成一张 markdown 表 |
+| 看图 | `script/train_vlm.py` | 冻结的 SigLIP2，先只训练投影层（align），再连同对话模型一起训练（sft），最后做 RL；数据是 ALLaVA |
+| 对话生图 | `script/train_vlm.py` | 画图、改图、看自己画的图的对话，见“多模态”一节 |
 
 ## 模型与优化器（`model/gpt.py`，`optimizer/optimizer.py`）
 
@@ -60,16 +63,7 @@
 - `--oversample`：动态采样（DAPO 的做法）。每步多采样一些题，只训练“16 个样本里有对有错”的那些题。
 - `--train_data`：换一套训练题，不用 GSM8K train。
 
-在 d24 上做的对比实验，GSM8K 用全部 1319 道 test 题评测：
-
-| RL 配置 | GSM8K | 现象 |
-|---|---|---|
-| SFT 模型（起点） | 0.124 | |
-| GSM8K train，原版 nanochat 算法 | 0.142 | 第 90 步左右开始崩，回答越来越短 |
-| GSM8K train + KL + 动态采样 | 0.154 | 不崩了，但测试集几乎不涨 |
-| **SFT 没见过的新题 + KL + 动态采样** | **0.178** | 测试集 pass@1 连续上涨 |
-
-主要发现：**SFT 数据里 GSM8K train 重复了 4 遍，模型已经把这些题背下来了**（训练集正确率 0.66，测试集只有 0.11）。在同一批题上做 RL，模型主要是在复习背过的答案。换成 OpenMathInstruct-2 里仿 GSM8K 风格新写的题（`script/prepare_rl_data.py`），RL 才真正提升了解新题的能力。`script/rl_filter.py` 可以用 SFT 模型给每道题测一次正确率，帮助挑选难度合适的题。
+d24 用的配置是 KL + 动态采样，训练题换成 OpenMathInstruct-2 里仿 GSM8K 风格新写的题（`script/prepare_rl_data.py`），GSM8K 从 SFT 的 0.124 提高到 0.178。不换题时效果很小：SFT 数据里 GSM8K train 重复了 4 遍，模型已经背下了这些题（训练集正确率 0.66，测试集只有 0.11），在同一批题上做 RL 主要是在复习答案。`script/rl_filter.py` 可以用 SFT 模型给每道题测一次正确率，帮助挑选难度合适的题。
 
 RL 阶段，vLLM 和参考模型放在一张卡上，训练模型放在另一张卡上，因为 d24 的训练状态加上 vLLM 放不进一张 32GB 的卡。
 
@@ -109,42 +103,42 @@ RL 阶段，vLLM 和参考模型放在一张卡上，训练模型放在另一张
 
 训练时混入原有的 SFT 和看图数据（`run_d24_t2i_chat.sh`），以尽量保留原有能力。
 
-**结果**（d24，手写的新问题，top-k 2，每题 3 次，`script/t2i_chat_eval.py`）：
+**结果**（最终模型 `chat_t2i_v9`，手写的新问题，top-k 2，每题 3 次，`script/t2i_chat_eval.py`）：
 
 | 指标 | 结果 |
 |---|---|
 | 该画时会画 / 不该画时不画 | 1.00 / 1.00 |
 | 改图时使用 `<\|edit prompt\|>` 并引用正确的图 | 0.98 |
-| 回到上一版 | 1.00 |
+| 回到之前的图 | 0.92 |
 | 模糊修改（“更可爱”）确实改了描述 | 1.00 |
-| 属性替换（“把车改成黄色”） | 0.94 |
-| 改图正确（关键词规则） | 0.80 |
+| 属性替换（“把车改成黄色”） | 0.89 |
+| 改图正确（关键词规则） | 0.87 |
 | 用户提到的细节都写进描述 | 0.73 |
-| **只有看图才能答对的问题**（描述里不提答案）：真图 / 灰图 | **0.93 / 0.10** |
+| **只有看图才能答对的问题**（描述里不提答案）：真图 / 灰图 | **1.00 / 0.03** |
+| 20 种问身份的说法里答出自己是光明星（各 3 次） | 59 / 60 |
 
 这些是关键词规则的分数，题量也小，只能作粗略参考。
 
-| 原有能力 | 加入生图前 | 加入生图后 |
+| 原有能力 | 看图 RL 之后（`vlm_rl`） | 最终模型（`chat_t2i_v9`） |
 |---|---|---|
-| ChatCORE | 0.250 | 0.252 |
-| ARC-Easy / ARC-Challenge | 0.629 / 0.490 | 0.616 / 0.496 |
-| MMLU | 0.379 | 0.381 |
-| HumanEval | 0.079 | 0.122 |
-| **GSM8K** | 0.173 | **0.146** |
-| 看图（居中准确率均值） | 0.218 | 0.223 |
+| ChatCORE | 0.250 | 0.250 |
+| ARC-Easy / ARC-Challenge | 0.629 / 0.490 | 0.613 / 0.489 |
+| MMLU | 0.379 | 0.379 |
+| HumanEval | 0.079 | 0.140 |
+| **GSM8K** | 0.173 | **0.136** |
+| 看图（居中准确率均值） | 0.218 | 0.222 |
 
-GSM8K 下降，很可能是因为这轮 SFT 在 RL 之后，冲掉了 RL 的部分收益，这一点没有单独验证过。
+最终模型的 GSM8K 和 HumanEval 是在一张 8GB 显卡上评测的（vLLM 最长 1024 个 token），其余数字都在 32GB 的卡上。GSM8K 下降，很可能是因为对话生图的训练在 RL 之后，冲掉了 RL 的部分收益，这一点没有单独验证过。
 
-**已知问题**：日常聊天能力有限（比如起名字答得很差）；看图时细节和数量常出错，也可能说看到了图里没有的东西；模型有时把用户的细节漏掉；回复说的改动不一定都画出来了。
-
-**试过但没有采用的**：
-- 自己训练的画图解码器（`model/imagegen.py`）：约 1.45 亿参数的 GPT 预测 LlamaGen VQ token，训练到 12 轮后主体能切题，但结构经常出错（狗腿错乱、多只眼睛）。
-- 自己训练的 thinker-talker 语音（`model/speech.py`）：WER 约 0.46–0.50，真实语音的基准是 0.11。对比 MiniMind-O 后认为主要差在 thinker 冻结，没有继续这条路。
+**已知问题**：日常聊天能力有限（比如起名字答得很差）；算术也会出错；看图时细节和数量常出错，也可能说看到了图里没有的东西；模型有时把用户的细节漏掉；回复说的改动不一定都画出来了。
 
 **运行页面**：
 
 ```bash
-python -m script.download_image_backend --model=z-image-turbo
+python -m script.download_release --what=weights    # 最终模型和分词器
+python -m script.download_image_backend            # Z-Image-Turbo
+python -m script.download_vlm                       # 只用到其中的 SigLIP2
+python -m script.download_audio                     # SenseVoice、Kokoro
 # diffusers 和 Kokoro 的依赖装在训练环境之外，安装命令写在 inference/image_backend.py 和 inference/speech_io.py 开头
 PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 ~/train_llm_pylibs/voice/bin/python -m script.chat_t2i_web \
     --chat_ckpt=weight/d24/chat_t2i_v9.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
@@ -187,12 +181,12 @@ conda activate gpt
 
 # 一键跑完整流程（每个配置的权重放在 weight/<配置>/ 下，互不干扰）
 setsid nohup bash run_single_gpu_8g.sh > log/d12.log 2>&1 < /dev/null &   # d12，单卡 8GB 就能跑
-setsid nohup bash run_single_gpu_32g.sh > log/d20.log 2>&1 < /dev/null &  # d20，单卡 32GB（还没有完整跑过）
 setsid nohup bash run_2gpu_d24.sh > log/d24.log 2>&1 < /dev/null &       # d24，两张 32GB，GPU 编号写在脚本开头
 ```
 
 - 数据会自动下载，默认走 hf-mirror 镜像。
 - 每个脚本都依次执行：下载数据 → 训练分词器 → 预训练 → base 评测 → SFT → chat 评测 → RL → chat 评测 → report。
+- d24 的多模态部分接着依次跑 `run_d24_rl_omi.sh`（准备 RL 题目）、`run_d24_vlm.sh`、`run_d24_vlm_rl.sh`、`run_d24_t2i_chat.sh`，各脚本开头写了需要的数据。
 - 也可以单独跑某个阶段，每个 `script/*.py` 文件开头都写了用法。
 
 **续跑**：
@@ -227,6 +221,6 @@ run_*.sh      不同硬件配置的完整流程，以及 d24 的 RL 和多模态
 ## 致谢
 
 - [karpathy/nanochat](https://github.com/karpathy/nanochat)：模型结构、优化器、训练流程和评测
-- [jingyaogong/minimind](https://github.com/jingyaogong/minimind)：项目最初的参考；看图和语音参考了 MiniMind-V、[MiniMind-O](https://github.com/jingyaogong/minimind-o)
-- 模型：SigLIP2、Z-Image-Turbo、SenseVoice、Kokoro、LlamaGen VQ、Mimi
-- 数据集：FineWeb-Edu、SmolTalk、MMLU、GSM8K、NousResearch/hermes-function-calling-v1、nvidia/OpenMathInstruct-2、DCLM CORE eval bundle、ARC、HumanEval、ALLaVA、text-to-image-2M、MiniMind-O dataset
+- [jingyaogong/minimind](https://github.com/jingyaogong/minimind)：项目最初的参考；看图参考了 MiniMind-V
+- 模型：SigLIP2、Z-Image-Turbo、SenseVoice、Kokoro
+- 数据集：FineWeb-Edu、SmolTalk、MMLU、GSM8K、NousResearch/hermes-function-calling-v1、nvidia/OpenMathInstruct-2、DCLM CORE eval bundle、ARC、HumanEval、ALLaVA、text-to-image-2M

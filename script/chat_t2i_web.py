@@ -1,11 +1,11 @@
 """A chat page for conversational image generation. Listens on 127.0.0.1 only: the server account is shared, so open it through
 a tunnel from your own computer, then browse http://localhost:8765
-The open-source model draws (inference/image_backend.py); --decoder_ckpt uses our own decoder instead. The browser allows the
+Z-Image-Turbo draws (inference/image_backend.py). The browser allows the
 microphone on localhost, so voice works through the tunnel too (inference/speech_io.py, --voice=0 turns it off).
 
 usage:
 PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 ~/train_llm_pylibs/voice/bin/python -m script.chat_t2i_web \
-    --chat_ckpt=weight/d24/chat_t2i.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
+    --chat_ckpt=weight/d24/chat_t2i_v9.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
 ssh -L 8765:127.0.0.1:8765 train-server
 """
 import argparse
@@ -25,19 +25,14 @@ from inference.chat_t2i import ChatT2I
 parser = argparse.ArgumentParser(description="chat page for conversational image generation")
 parser.add_argument("--chat_ckpt", type=str, required=True)
 parser.add_argument("--tokenizer_path", type=str, required=True)
-parser.add_argument("--decoder_ckpt", type=str, default="", help="our own decoder instead of the open-source model")
 parser.add_argument("--port", type=int, default=8765)
 parser.add_argument("--voice", type=int, default=1, help="microphone and spoken replies")
 args = parser.parse_args()
 
-chat = ChatT2I(args.chat_ckpt, args.tokenizer_path, args.decoder_ckpt or None)
-back = None
-if args.decoder_ckpt:
-    draw = chat.draw
-else:
-    from inference.image_backend import ZImageBackend
-    back = ZImageBackend()
-    draw = back.draw
+chat = ChatT2I(args.chat_ckpt, args.tokenizer_path)
+from inference.image_backend import ZImageBackend
+back = ZImageBackend()
+draw = back.draw
 lock = threading.Lock()  # one conversation turn on the GPU at a time
 speech_in = speech_out = None
 if args.voice:

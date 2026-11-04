@@ -8,9 +8,7 @@ import re
 import numpy as np
 import soundfile as sf
 
-from common.data_paths import AUDIO_SENSEVOICE, RAW_ROOT
-
-KOKORO = RAW_ROOT / "audio" / "kokoro"
+from common.data_paths import AUDIO_KOKORO, AUDIO_SENSEVOICE
 
 
 class SpeechIn:
@@ -31,9 +29,9 @@ class SpeechIn:
 class SpeechOut:
     def __init__(self, voice="af_heart", device="cpu"):
         from kokoro import KModel, KPipeline
-        model = KModel(config=str(KOKORO / "config.json"), model=str(KOKORO / "kokoro-v1_0.pth")).to(device).eval()
+        model = KModel(config=str(AUDIO_KOKORO / "config.json"), model=str(AUDIO_KOKORO / "kokoro-v1_0.pth")).to(device).eval()
         self.pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M", model=model)
-        self.voice = str(KOKORO / "voices" / f"{voice}.pt")
+        self.voice = str(AUDIO_KOKORO / "voices" / f"{voice}.pt")
 
     def speak(self, text):
         """text -> a WAV file at 24 kHz"""

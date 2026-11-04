@@ -30,7 +30,7 @@ RAW_AUDIO = RAW_ROOT / "audio"
 AUDIO_SENSEVOICE = RAW_AUDIO / "SenseVoiceSmall" # writes down what the user says
 AUDIO_KOKORO = RAW_AUDIO / "kokoro"              # reads the replies aloud
 
-# image generation: captions for the drawing conversations (script/prepare_t2i_data.py), the model that draws
+# image generation: the model that draws; the caption paths are only used to make the published data
 RAW_T2I = RAW_ROOT / "t2i"
 T2I_RAW_VQ = RAW_T2I / "vq256"                    # captions of 256x256 images (text-to-image-2M)
 T2I_DATA = PROCESSED_ROOT / "t2i_en256"           # English captions only, shuffled shards
@@ -41,7 +41,7 @@ EVAL_BUNDLE = RAW_EVAL / "eval_bundle"  # CORE (DCLM)
 EVAL_ARC = RAW_EVAL / "ai2_arc"
 EVAL_HUMANEVAL = RAW_EVAL / "openai_humaneval"
 SFT_IDENTITY = RAW_CUSTOM / "identity_conversations_en_d20.jsonl"
-# datagen/ 用 DeepSeek 合成的数据
+# 用 DeepSeek 合成的数据，发布在 Hugging Face（script/download_release.py）
 SFT_IDENTITY_QA = RAW_CUSTOM / "identity_qa_d20.jsonl"  # 短的身份问答（你是谁 / 你是 ChatGPT 吗）
 SFT_TOOLCALL_SYNTH = RAW_CUSTOM / "toolcall_synth.jsonl"  # 参数纠错重试 / 缺参数先追问 / 连续调用 / 不该调用
 SFT_T2I_CHAT = RAW_CUSTOM / "t2i_chat.jsonl"  # 对话式生图：什么时候画、怎么写描述、连续改图、不该画

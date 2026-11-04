@@ -5,9 +5,7 @@
 #   1. chat_t2i_v7: 1600 steps from vlm_rl.ckpt on the drawing conversations and their pictures
 #   2. chat_t2i_v9 (final): 300 steps from chat_t2i_v7 with identity data at a quarter of the learning rate, which brings
 #      back who the model is; the last step is kept, the validation loss does not measure what this round is for
-# Data first, either the published one (python -m script.download_release --what=data) or made again:
-#   DEEPSEEK_API_KEY=... python -m datagen.synth_t2i_chat
-#   script.render_chat_images (both shards, then --merge=1) and datagen.label_chat_images, see their docstrings
+# Data first: python -m script.download_release --what=data
 # GPUS=1,2 setsid nohup bash run_d24_t2i_chat.sh >> log/d24_t2i_chat.log 2>&1 < /dev/null &
 # Rerunning the same command after a kill continues where it stopped.
 set -e

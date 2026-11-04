@@ -13,7 +13,6 @@ import re
 import numpy as np
 
 from common.report import default_report_dir, write_report
-from datagen.synth_t2i_chat import shared_words
 from inference.chat_t2i import ChatT2I
 from inference.image_backend import ZImageBackend
 
@@ -79,6 +78,13 @@ SEEING = [("draw a car", "A car parked on a quiet road.", "A bright red car park
           ("draw a vehicle on a street", "A vehicle on a street.", "A yellow school bus on a street.", "What vehicle is in the picture?", "bus")]
 BARE = ["draw a cat", "draw a dog", "draw a house", "draw a car", "draw a bird", "draw a flower"]
 
+
+
+def shared_words(previous, new):
+    """the share of the previous description's words still in the new one"""
+    words = lambda text: set(re.findall(r"[a-z]+", text.lower())) - {"a", "an", "the", "and", "of", "with", "in", "on", "at", "under", "by", "its", "is"}
+    a, b = words(previous), words(new)
+    return len(a & b) / max(1, len(a))
 
 
 def FIRST(request):

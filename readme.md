@@ -94,12 +94,12 @@ RL 阶段，vLLM 和参考模型放在一张卡上，训练模型放在另一张
 
 **训练数据**：网上没有找到能直接用的对话数据（[DialogBen](https://hunyuan-dialoggen.github.io) 还没有放出数据），所以都是合成的：
 
-| 数据 | 脚本 | 内容 |
-|---|---|---|
-| 约 3 万条对话 | `datagen/synth_t2i_chat.py` | 模板和 DeepSeek 合成，每类都有程序校验，比如改图后新旧描述的词语重合度、被替换的颜色是否消失 |
-| 约 2.4 万张图 | `script/render_chat_images.py` | 用 Z-Image-Turbo 把其中 1.4 万条对话里的图真的画出来 |
-| 7073 组看图问答 | `datagen/label_chat_images.py` | 让能看图的 DeepSeek 模型看着图写问答，不给它描述 |
-| 2 万条“先画再看” | `script/render_chat_images.py --merge=1` | ALLaVA 的真实图，第一句作描述，问“图里有什么”时答完整描述 |
+| 数据 | 内容 |
+|---|---|
+| 约 3 万条对话 | 模板和 DeepSeek 合成，每类都有程序校验，比如改图后新旧描述的词语重合度、被替换的颜色是否消失 |
+| 约 2.4 万张图 | 用 Z-Image-Turbo 把其中 1.4 万条对话里的图真的画出来 |
+| 7073 组看图问答 | 让能看图的 DeepSeek 模型看着图写问答，不给它描述 |
+| 2 万条“先画再看” | ALLaVA 的真实图，第一句作描述，问“图里有什么”时答完整描述 |
 
 训练时混入原有的 SFT 和看图数据（`run_d24_t2i_chat.sh`），以尽量保留原有能力。
 
@@ -162,16 +162,16 @@ ssh -L 8765:127.0.0.1:8765 <服务器>   # 然后打开 http://localhost:8765
 
 | 文件 | 条数 | 生成方式 |
 |---|---|---|
-| `custom/identity_conversations_en_d24.jsonl` | 3349 | `datagen/update_identity.py`，DeepSeek |
-| `custom/identity_qa_d24.jsonl` | 526 | `datagen/synth_identity_qa.py`，DeepSeek |
-| `custom/identity_direct_d24.jsonl` | 2041 | `datagen/synth_identity_qa.py --direct=1`，各种直接问身份的说法 |
-| `custom/toolcall_synth.jsonl` | 991 | `datagen/synth_toolcall.py`，DeepSeek |
-| `custom/t2i_chat.jsonl` | 31348 | `datagen/synth_t2i_chat.py`：模板和 DeepSeek 合成的画图、改图、聊天对话 |
-| `custom/t2i_chat_text.jsonl` | 6479 | `script/render_chat_images.py` 拆出的不画图的对话 |
-| `processed/chat/*.parquet` | 34000 条对话，44011 张图 | `script/render_chat_images.py`：对话里的图用 Z-Image-Turbo 画好，加上 ALLaVA 图片的“先画再看” |
-| `processed/chat_labels/*.json` | 7073 组 | `datagen/label_chat_images.py`：DeepSeek 看着图写的问答 |
+| `custom/identity_conversations_en_d24.jsonl` | 3349 | DeepSeek 生成的身份对话 |
+| `custom/identity_qa_d24.jsonl` | 526 | DeepSeek 生成的简短身份问答 |
+| `custom/identity_direct_d24.jsonl` | 2041 | DeepSeek 生成，各种直接问身份的说法 |
+| `custom/toolcall_synth.jsonl` | 991 | DeepSeek 生成：出错后重试、缺参数先追问、连续调用、不该调用 |
+| `custom/t2i_chat.jsonl` | 31348 | 模板和 DeepSeek 合成的画图、改图、聊天对话 |
+| `custom/t2i_chat_text.jsonl` | 6479 | 其中不画图的对话 |
+| `processed/chat/*.parquet` | 34000 条对话，44011 张图 | 对话里的图用 Z-Image-Turbo 画好，加上 ALLaVA 图片的“先画再看” |
+| `processed/chat_labels/*.json` | 7073 组 | DeepSeek 看着图写的问答 |
 
-其余数据（FineWeb-Edu、SmolTalk、ALLaVA 等）都是公开数据集，由 `script/download_*.py` 下载、`script/prepare_*.py` 处理。用 DeepSeek 重新生成数据需要自己的 API key，结果和这里公开的不会完全相同。
+其余数据（FineWeb-Edu、SmolTalk、ALLaVA 等）都是公开数据集，由 `script/download_*.py` 下载、`script/prepare_*.py` 处理。
 
 ## 快速开始
 
@@ -207,7 +207,6 @@ tasks/        预训练、SFT、评测和 RL 的数据集
 script/       各阶段入口：下载数据、训练、评测、RL、报告
 evaluation/   CORE、bpb、代码执行（HumanEval）、对话采样
 inference/    PyTorch 推理引擎、vLLM 适配、对话生图、画图和语音后端
-datagen/      用 DeepSeek 生成身份对话、工具调用和对话生图数据
 common/       路径、checkpoint 工具、report 读写
 run_*.sh      不同硬件配置的完整流程，以及 d24 的 RL 和多模态脚本
 ```

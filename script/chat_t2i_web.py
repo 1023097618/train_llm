@@ -1,12 +1,12 @@
-"""A chat page for conversational image generation. Listens on 127.0.0.1 only: the server account is shared, so open it through
-a tunnel from your own computer, then browse http://localhost:8765
+"""A chat page for conversational image generation. Listens on 127.0.0.1 only: on a remote GPU machine open it through an SSH
+tunnel from your own computer, then browse http://localhost:8765
 Z-Image-Turbo draws (inference/image_backend.py). The browser allows the
 microphone on localhost, so voice works through the tunnel too (inference/speech_io.py, --voice=0 turns it off).
 
 usage:
-PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 ~/train_llm_pylibs/voice/bin/python -m script.chat_t2i_web \
-    --chat_ckpt=weight/d24/chat_t2i_v9.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
-ssh -L 8765:127.0.0.1:8765 train-server
+python -m script.download_release --what=weights && python -m script.download_image_backend
+python -m script.chat_t2i_web --chat_ckpt=weight/d24/chat_t2i_v9.ckpt --tokenizer_path=weight/d24/tokenizer.pkl --voice=0
+ssh -L 8765:127.0.0.1:8765 <gpu machine>  # then browse http://localhost:8765
 """
 import argparse
 import base64

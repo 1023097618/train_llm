@@ -54,13 +54,15 @@ fi
 echo ">>> Installing rustbpe from $RUSTBPE_SRC"
 pip install "$RUSTBPE_SRC"
 
-# Register a Jupyter kernel so notebooks (e.g. optimizer/get_coefficient.ipynb) can use it
-python -m ipykernel install --user --name "$ENV_NAME" --display-name "Python ($ENV_NAME)"
+# Multimodal: SigLIP2 (transformers), the image model of the chat page (diffusers), the page itself (fastapi)
+echo ">>> Installing the multimodal packages"
+pip install "transformers==5.17.0" "diffusers==0.42.1" accelerate fastapi uvicorn soundfile
+# The microphone and spoken replies of the chat page are optional: pip install funasr kokoro "misaki[en]"
 
 # Self-check
 echo ">>> Checking environment"
 python - <<'EOF'
-import torch, tiktoken, rustbpe, pyarrow, pandas, wandb, docstring_parser, huggingface_hub, vllm, jinja2, yaml
+import torch, tiktoken, rustbpe, pyarrow, pandas, wandb, docstring_parser, huggingface_hub, vllm, jinja2, yaml, transformers, diffusers, fastapi
 print(f"torch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     for i in range(torch.cuda.device_count()):

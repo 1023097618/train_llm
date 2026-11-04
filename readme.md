@@ -10,8 +10,6 @@
 
 ![对话页面：自我介绍，画一只猫，把它改成橙色、改成夜晚、戴上红帽子](docs/demo.gif)
 
-*对话页面的真实录屏（等待出图的几秒做了加速，多录了几次，选了改图效果最好的一次）。图由 Z-Image-Turbo 画，什么时候画、怎么写和改描述由我们训练的模型决定。*
-
 ## 结果
 
 | 指标 | d12（单卡） | d24（2 × 32GB） |
@@ -36,7 +34,7 @@
 
 ```
 分词器 → 预训练 → base 评测 → SFT → chat 评测 → RL → chat 评测 → report         （run_2gpu_d24.sh）
-SFT → 看图 align → 看图 SFT → 看图 RL → 对话生图两轮 → 最终模型 chat_t2i_v9       （run_d24_vlm*.sh、run_d24_t2i_chat.sh）
+SFT → 看图 align → 看图 SFT → 看图 RL → 对话生图两轮 → 最终模型 chat_t2i_v9       （run_d24_multimodal.sh）
 ```
 
 | 阶段 | 脚本 | 数据 / 内容 |
@@ -105,7 +103,7 @@ RL 阶段，vLLM 和参考模型放在一张卡上，训练模型放在另一张
 | 7073 组看图问答 | 让能看图的 DeepSeek 模型看着图写问答，不给它描述 |
 | 2 万条“先画再看” | ALLaVA 的真实图，第一句作描述，问“图里有什么”时答完整描述 |
 
-训练时混入原有的 SFT 和看图数据（`run_d24_t2i_chat.sh`），以尽量保留原有能力。
+训练时混入原有的 SFT 和看图数据（`run_d24_multimodal.sh`），以尽量保留原有能力。
 
 **结果**（最终模型 `chat_t2i_v9`，手写的新问题，top-k 2，每题 3 次，`script/t2i_chat_eval.py`）：
 
@@ -186,11 +184,12 @@ conda activate gpt
 # 一键跑完整流程（每个配置的权重放在 weight/<配置>/ 下，互不干扰）
 setsid nohup bash run_single_gpu_8g.sh > log/d12.log 2>&1 < /dev/null &   # d12，单卡 8GB 就能跑
 setsid nohup bash run_2gpu_d24.sh > log/d24.log 2>&1 < /dev/null &       # d24，两张 32GB，GPU 编号写在脚本开头
+setsid nohup bash run_d24_multimodal.sh > log/d24_mm.log 2>&1 < /dev/null &   # d24 之后：看图、对话生图，得到最终模型
 ```
 
 - 数据会自动下载，默认走 hf-mirror 镜像。
-- 每个脚本都依次执行：下载数据 → 训练分词器 → 预训练 → base 评测 → SFT → chat 评测 → RL → chat 评测 → report。
-- d24 的多模态部分接着依次跑 `run_d24_rl_omi.sh`（准备 RL 题目）、`run_d24_vlm.sh`、`run_d24_vlm_rl.sh`、`run_d24_t2i_chat.sh`，各脚本开头写了需要的数据。
+- 前两个脚本都依次执行：下载数据 → 训练分词器 → 预训练 → base 评测 → SFT → chat 评测 → RL → chat 评测 → report。
+- `run_d24_multimodal.sh` 接着 d24 的 SFT 模型往下跑，中断后重新运行会跳过已完成的阶段，从未完成阶段的训练状态继续。
 - 也可以单独跑某个阶段，每个 `script/*.py` 文件开头都写了用法。
 
 **续跑**：

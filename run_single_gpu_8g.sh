@@ -4,7 +4,7 @@
 # kill -- -12345
 set -e
 
-# 找到当前用户的 conda（nohup 下不一定加载 .bashrc，PATH 里可能没有 conda）
+# find this user's conda (under nohup .bashrc may not be loaded and conda may not be on PATH)
 if ! command -v conda >/dev/null 2>&1; then
     for p in "$HOME/miniconda3" "$HOME/anaconda3" /home/vislab/anaconda3; do
         [ -f "$p/etc/profile.d/conda.sh" ] && source "$p/etc/profile.d/conda.sh" && break
@@ -14,7 +14,7 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate gpt
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 unset all_proxy ALL_PROXY
-# 每个配置的 tokenizer 和权重放在各自目录，可以和其他 run_*.sh 同时运行
+# each configuration keeps its tokenizer and weights in its own directory, so it can run next to the other run_*.sh
 WEIGHT_DIR=weight/d12
 TOKENIZER=$WEIGHT_DIR/tokenizer.pkl
 PRETRAIN_CKPT=$WEIGHT_DIR/pretrained_model.ckpt

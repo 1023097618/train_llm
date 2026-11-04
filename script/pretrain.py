@@ -103,16 +103,6 @@ prompts=[
     "My favorite color is",
     "If 5*x + 3 = 13, then x is",
 ]
-# prompts=[
-#     "法国的首都是",
-#     "金的化学表达式是",
-#     "如果昨天是周五，那么今天是",
-#     "热的反义词是",
-#     "太阳系的行星是",
-#     "我最爱的颜色是",
-#     "如果5*x+3=13，那么x是",
-#     "王恩宇是一个"
-# ]
 tokeniz=tokenizer.Tokenizer.from_dict(args.tokenizer_path,device=device)
 token_bytes=tokeniz.get_token_bytes()
 config=gpt.GPTConfig.from_depth(args.depth,kv_num=args.kv_num,seq_len=args.seq_len,vocab_size=args.vocab_size,window_pattern=args.window_pattern)
@@ -152,7 +142,7 @@ batch_lr_scale=(args.batch_token/B_REF)**0.5
 weight_decay_scaled=args.weight_decay*batch_lr_scale*(D_REF/target_token)
 config_all.update(batch_lr_scale=batch_lr_scale,weight_decay_scaled=weight_decay_scaled)
 
-# 只在 rank0 统计 token，再广播给其他 rank，避免多进程同时写缓存/重复统计
+# only rank 0 counts tokens and broadcasts the result, so processes do not write the cache at once or count twice
 select_result=[None]
 if is_main:
     try:
@@ -198,7 +188,7 @@ if is_main:
 if args.resume!=-1:
     with open(args.save_ckpt_path,"rb") as f:
         resume_dict=torch.load(f, map_location="cpu", weights_only=False)
-        assert resume_dict.get("num_workers") == args.num_workers, "resume 时 num_workers 必须与保存时一致"
+        assert resume_dict.get("num_workers") == args.num_workers, "num_workers must match the saved run when resuming"
         orig_gpt.load_state_dict(resume_dict['model_state'])
         train_resume_state = resume_dict['train_loader_state_dict']
         optimizer_resume_state=resume_dict['optimizer_state_dict']

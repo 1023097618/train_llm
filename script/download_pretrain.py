@@ -8,7 +8,7 @@ python -m script.download_pretrain --num_shards=180   # for d20 (1280 dim)
 
 import argparse
 import os
-# 默认走国内镜像；已经设置了 HF_ENDPOINT 时以环境变量为准
+# the hf-mirror.com mirror by default; an HF_ENDPOINT that is already set wins
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 import huggingface_hub
@@ -31,7 +31,7 @@ for attempt in range(args.retries):
         )
         break
     except Exception as e:
-        print(f"重试 ({attempt + 1}/{args.retries}):", e)
+        print(f"retry ({attempt + 1}/{args.retries}):", e)
 else:
     raise RuntimeError("failed to download pretraining shards")
 print(f"{args.num_shards} shards -> {PRETRAIN_T2T}")

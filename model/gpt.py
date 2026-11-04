@@ -390,7 +390,7 @@ class GPT(nn.Module):
             p['init_wd']=p['wd']
         covered = {id(p) for g in params_group for p in g['params']}
         missing = [n for n, p in self.named_parameters() if id(p) not in covered]
-        assert not missing, f"参数未分组: {missing}"
+        assert not missing, f"parameters in no group: {missing}"
         return params_group
 
     def get_model_scale(self):

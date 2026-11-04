@@ -13,7 +13,7 @@ def _one_type(py_type):
     return {"type": _PY_TO_JSON.get(py_type, "string")}
 
 def _type_schema(py_type):
-    """返回该类型对应的 JSON schema 片段（不含 description）。"""
+    """the JSON schema fragment of a type (without description)"""
     origin = get_origin(py_type)
     if origin is Union or origin is UnionType:
         non_none = [a for a in py_type.__args__ if a is not type(None)]
@@ -45,15 +45,15 @@ def tool(fn):
     fn.schema=json.dumps(fn.schema, ensure_ascii=False)
 
 
-    @wraps(fn)                       # 保留 __name__、__doc__ 等
+    @wraps(fn)                       # keeps __name__, __doc__ and the rest
     def new_fn(*args, **kwargs):
         result = fn(*args, **kwargs)
         if isinstance(result, str):
-            return result           # 已经是字符串就直接用,别再 json.dumps 套一层引号
+            return result           # a string is used as is, json.dumps would add another layer of quotes
         try:
-            return json.dumps(result, ensure_ascii=False)  # dict/list/标量都能处理
+            return json.dumps(result, ensure_ascii=False)  # dicts, lists and scalars
         except (TypeError, ValueError):
-            return str(result)      # 不可序列化时兜底
+            return str(result)      # fallback for what json cannot serialize
     
     new_fn.schema = fn.schema
     return new_fn

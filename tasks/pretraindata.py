@@ -11,16 +11,16 @@ from torch.utils.data import get_worker_info
 
 
 def count_file_tokens(data_file, tokeniz: tokenizer.Tokenizer, num_threads=8):
-    # 与 __iter__ 一致：每篇文档额外加 <|doc|> 和 <|/doc|> 两个 token
+    # as in __iter__: every document gets the two extra tokens <|doc|> and <|/doc|>
     texts = pq.read_table(data_file, columns=['text'])['text'].to_pylist()
     tokens = tokeniz.tokenizer.encode_ordinary_batch(texts, num_threads=num_threads)
     return sum(len(t) for t in tokens) + 2 * len(texts)
 
 
 def select_train_files(data_dir, tokeniz: tokenizer.Tokenizer, target_token, cache_name="token_count.json"):
-    """按顺序累加训练文件的 token 数，返回刚好满足 target_token 的最短前缀文件列表；不足时报错。
-    统计结果缓存在 data_dir/cache_name，文件大小/修改时间/词表大小变化时会重新统计。"""
-    data_files = sorted(glob.glob(os.path.join(data_dir, "shard_*.parquet")))[:-1]  # 最后一个文件留给 test
+    """adds up the tokens of the training files in order and returns the shortest prefix that reaches target_token; raises
+    when there are not enough. Counts are cached in data_dir/cache_name and recounted when file sizes, times or the vocabulary change."""
+    data_files = sorted(glob.glob(os.path.join(data_dir, "shard_*.parquet")))[:-1]  # the last file is kept for test
     cache_path = os.path.join(data_dir, cache_name)
     cache = {}
     if os.path.exists(cache_path):
@@ -43,8 +43,8 @@ def select_train_files(data_dir, tokeniz: tokenizer.Tokenizer, target_token, cac
         if total >= target_token:
             return selected, total
     raise RuntimeError(
-        f"训练数据不足：{len(data_files)} 个训练文件共 {total:,} token，"
-        f"需要 {target_token:,} token（还差 {target_token - total:,}）"
+        f"not enough training data: {len(data_files)} training files hold {total:,} tokens, "
+        f"{target_token:,} are needed ({target_token - total:,} missing)"
     )
 
 

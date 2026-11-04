@@ -122,7 +122,7 @@ class Engine:
                     next_token[i,0]=row_state.output_token.popleft()
                     continue
                 if next_token[i,0]==edit_prompt_start:
-                    # 这一步转移不训练（见 tokenizer.render_conversation），由运行时补上
+                    # this transition is not trained (see tokenizer.render_conversation), the runtime adds it
                     row_state.output_token.append(image_ref_start)
                 elif next_token[i,0]==start_of_tool_call:
                     row_state.toolcall=True

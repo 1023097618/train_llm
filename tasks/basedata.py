@@ -15,7 +15,7 @@ class BaseDataset(IterableDataset,ABC):
         raise NotImplementedError
 
     def estimate_total_token(self, sample_num=2000):
-        # 采样 sample_num 条估平均长度,再乘总条数
+        # the mean length of sample_num examples times the number of examples
         total_row = len(self)
         if total_row == 0:
             return 0

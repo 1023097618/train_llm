@@ -1,5 +1,7 @@
 # train_llm：从零训练一个小型对话模型
 
+[English](README.md) | 中文
+
 从分词器、预训练、SFT 到强化学习，完整训练一个能对话、会调用工具的小语言模型“光明星”（Guangmingxing，GMX），并用和 [nanochat](https://github.com/karpathy/nanochat) 相同的方法评测每个阶段。在这个模型上，又加了看图能力和英文的对话式生图，模型能看到自己画的图。
 
 模型结构、优化器和训练流程基本对齐 nanochat，同时参考了 [minimind](https://github.com/jingyaogong/minimind)。在此基础上加了几样东西：
@@ -148,11 +150,10 @@ RL 阶段，vLLM 和参考模型放在一张卡上，训练模型放在另一张
 python -m script.download_release --what=weights    # 最终模型和分词器
 python -m script.download_image_backend            # Z-Image-Turbo
 python -m script.download_vlm                       # 只用到其中的 SigLIP2
-python -m script.download_audio                     # SenseVoice、Kokoro
-# diffusers 和 Kokoro 的依赖装在训练环境之外，安装命令写在 inference/image_backend.py 和 inference/speech_io.py 开头
-PYTHONPATH=~/train_llm_pylibs/image CUDA_VISIBLE_DEVICES=1 ~/train_llm_pylibs/voice/bin/python -m script.chat_t2i_web \
-    --chat_ckpt=weight/d24/chat_t2i_v9.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
-ssh -L 8765:127.0.0.1:8765 <服务器>   # 然后打开 http://localhost:8765
+python -m script.download_audio                     # SenseVoice、Kokoro（语音可选）
+pip install funasr kokoro "misaki[en]"              # 语音可选；不装就加 --voice=0
+python -m script.chat_t2i_web --chat_ckpt=weight/d24/chat_t2i_v9.ckpt --tokenizer_path=weight/d24/tokenizer.pkl
+ssh -L 8765:127.0.0.1:8765 <显卡机器>   # 在远程机器上运行时，然后打开 http://localhost:8765
 ```
 
 页面只监听本机地址，没有内容过滤，也没有登录，不要直接暴露到公网。显存约需 28 GB。

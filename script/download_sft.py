@@ -5,7 +5,7 @@ python -m script.download_sft
 """
 
 import os
-# 默认走国内镜像；已经设置了 HF_ENDPOINT 时以环境变量为准
+# the hf-mirror.com mirror by default; an HF_ENDPOINT that is already set wins
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 import huggingface_hub
 from common.data_paths import RAW_SFT
@@ -30,7 +30,7 @@ for repo_id, local_name, patterns in DATASETS:
             )
             break
         except Exception as e:
-            print(f"重试 {repo_id} ({attempt + 1}/10):", e)
+            print(f"retry {repo_id} ({attempt + 1}/10):", e)
     else:
         raise RuntimeError(f"failed to download {repo_id}")
     print(f"{repo_id} -> {RAW_SFT / local_name}")

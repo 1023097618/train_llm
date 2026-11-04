@@ -61,7 +61,7 @@ def rms_norm(x):
     return F.rms_norm(x,(x.size(-1),))
 
 # https://github.com/karpathy/nanochat/blob/master/nanochat/common.py#L228
-# 对于DDP训练来说，多个显卡型号需要是同一款，否则会有木桶效应
+# with DDP the GPUs should be the same model, otherwise the slowest one sets the pace
 def get_peak_flops(device_name: str) -> float:
     name = device_name.lower()
 

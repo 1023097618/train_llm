@@ -7,7 +7,7 @@
 # kill -- -<pgid>
 set -e
 
-# 找到当前用户的 conda（nohup 下不一定加载 .bashrc，PATH 里可能没有 conda）
+# find this user's conda (under nohup .bashrc may not be loaded and conda may not be on PATH)
 if ! command -v conda >/dev/null 2>&1; then
     for p in "$HOME/miniconda3" "$HOME/anaconda3" /home/vislab/anaconda3; do
         [ -f "$p/etc/profile.d/conda.sh" ] && source "$p/etc/profile.d/conda.sh" && break

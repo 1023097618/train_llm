@@ -88,6 +88,6 @@ for tokeniz_name,tokeniz in tokenizers.items():
         tokens=tokeniz.encode_ordinary(text)
         result[tokeniz_name][text_name]=(len(utf_text)/len(tokens))
 
-df = pd.DataFrame(result)   # 外层 key 变成列，内层 key 变成行
+df = pd.DataFrame(result)   # outer keys become columns, inner keys rows
 print("compression ratio (higher is better)")
 print(df.round(2))

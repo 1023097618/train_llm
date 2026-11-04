@@ -83,46 +83,46 @@ def search_flight(origin: str, destination: str, date: str):
     return {"origin": origin, "destination": destination, "date": date, "flights": ["CA1234 08:00", "MU5678 14:30"]}
 
 
-# 每条: (system_prompt, user_query, [可用工具])
+# each case: (system_prompt, user_query, [available tools])
 test_case = [
 
-    # --- 1. 单工具直接调用 ---
+    # --- 1. one tool, called directly ---
     ("", "What time is it in Shanghai right now?", [get_current_time]),
 
-    # --- 2. 城市→时区的隐式推理（模型需自己映射到America/New_York）---
+    # --- 2. city -> time zone, implicit (the model has to map it to America/New_York itself) ---
     ("", "What time is it in New York?", [get_current_time]),
 
-    # --- 3. 缺省参数处理（date有默认值，不该硬填）---
+    # --- 3. default arguments (date has a default and should not be filled in) ---
     ("", "What's the weather like in Beijing today?", [get_weather]),
 
-    # --- 4. 数值类型参数提取 ---
+    # --- 4. extracting numeric arguments ---
     ("", "Convert 100 US dollars to Chinese yuan for me.", [convert_currency]),
 
-    # --- 5. 多工具并存时的正确选择（有多个工具，只应选calculate）---
+    # --- 5. choosing among several tools (only calculate fits) ---
     ("", "What is (18 + 6) * 3?", [get_current_time, get_weather, calculate]),
 
-    # --- 6. 多参数一次性抽取 ---
+    # --- 6. several arguments at once ---
     ("", "Send an email to zhangsan@example.com with the subject \"Weekly report\" and the body \"All tasks for this week are done.\"", [send_email]),
 
-    # --- 7. 需要多次工具调用（上海和东京两个时区）---
+    # --- 7. several calls needed (Shanghai and Tokyo time zones) ---
     ("", "What time is it in Shanghai and in Tokyo right now?", [get_current_time]),
 
-    # --- 8. 跨工具组合任务（查完天气/时间后要不要继续）---
+    # --- 8. combining tools (whether to go on after the weather / time lookup) ---
     ("", "Find me flights from Beijing to Shanghai tomorrow.", [search_flight, get_weather]),
 
-    # --- 9. 不需要调用工具（闲聊，考察模型不过度调用）---
+    # --- 9. no tool needed (small talk: the model should not call tools needlessly) ---
     ("", "Hi, what can you do?", [get_current_time, get_weather, calculate]),
 
-    # --- 10. 工具无法满足需求（应说明无法完成而非强行调用）---
+    # --- 10. no tool fits (it should say so rather than force a call) ---
     ("", "Book me a movie ticket for tomorrow night.", [get_current_time, get_weather, calculate]),
 
-    # --- 11. 参数缺失，应追问而非编造（没给收件人）---
+    # --- 11. a missing argument: ask instead of inventing it (no recipient given) ---
     ("", "Send an email saying I'm taking the day off today.", [send_email]),
 
-    # --- 12. 带 system prompt 的约束场景 ---
+    # --- 12. constraints in a system prompt ---
     ("You are an assistant that always answers in the UTC timezone.", "What time is it now?", [get_current_time]),
 
-    # --- 13. 多轮/链式：先算汇率再判断（考察是否能连续调用）---
+    # --- 13. chained: convert the currency first, then decide (several calls in a row) ---
     ("", "Roughly how much is 300 euros in US dollars? Then work out how many 120-dollar tickets that money can buy.", [convert_currency, calculate]),
 
     ("", "What model are you?", [])

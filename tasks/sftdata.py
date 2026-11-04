@@ -1,9 +1,9 @@
-"""SFT 数据：nanochat 的对话数据混合 + best-fit 打包加载器。
+"""SFT data: nanochat's conversation mixture + a best-fit packing loader.
 
-三层结构：
-- Task：一个数据源，get_example(i) 返回 {"source", "messages"}
-- TaskMixture：把多个 Task 按固定 seed 打乱混在一起，同一个 Task 传多次即多个 epoch
-- SFTDataset：从 TaskMixture 里按 (rank, worker) 步长取对话，tokenize 后 best-fit 打包成 batch
+Three layers:
+- Task: one data source, get_example(i) returns {"source", "messages"}
+- TaskMixture: shuffles several Tasks together with a fixed seed; passing a Task several times gives several epochs
+- SFTDataset: takes conversations from the TaskMixture with a (rank, worker) stride, tokenizes and best-fit packs them
 """
 
 import os
@@ -45,7 +45,7 @@ class Task:
 
 
 class ParquetTask(Task):
-    """只读需要的列，按行随机访问。"""
+    """reads only the needed columns, random access by row"""
 
     def __init__(self, data_dir, split, columns, start=0, stop=None):
         super().__init__(start, stop)
@@ -66,7 +66,7 @@ class ParquetTask(Task):
 
 
 class SmolTalk(ParquetTask):
-    """HuggingFaceTB/smol-smoltalk：通用多轮对话，train 460K / test 24K。"""
+    """HuggingFaceTB/smol-smoltalk: general multi-turn conversations, train 460K / test 24K"""
     name = "smoltalk"
 
     def __init__(self, split, **kwargs):
@@ -77,7 +77,7 @@ class SmolTalk(ParquetTask):
 
 
 def render_mc(question, letters, choices):
-    # 与 nanochat 的 tasks/common.py 保持一致
+    # same as nanochat's tasks/common.py
     query = f"Multiple Choice question: {question}\n"
     query += "".join([f"- {choice}={letter}\n" for letter, choice in zip(letters, choices)])
     query += "\nRespond only with the letter of the correct answer."
@@ -85,7 +85,7 @@ def render_mc(question, letters, choices):
 
 
 class MMLU(ParquetTask):
-    """cais/mmlu all：auxiliary_train 100K 选择题，test 14K。"""
+    """cais/mmlu all: auxiliary_train 100K multiple choice questions, test 14K"""
     name = "mmlu"
     letters = ("A", "B", "C", "D")
 
@@ -103,8 +103,8 @@ class MMLU(ParquetTask):
 GSM8K_TOOL_PATTERN = re.compile(r"(<<[^>]+>>)")
 
 
-# 和推理时完全一致：system 里给出工具 schema（同 Tokenizer.render_prompt_for_completion），
-# 调用格式对应 inference/engine.py 的 safe_execute_function，返回值就是 calculate 的真实输出
+# exactly as at inference: the tool schema in the system turn (like Tokenizer.render_prompt_for_completion), calls in
+# the format of inference/engine.py's safe_execute_function, and the real output of calculate
 CALCULATOR_TOOLS = "[" + calculate.schema + "]"
 
 
@@ -126,14 +126,14 @@ def calculator_output(expression, result):
     output = json.loads(calculate(expression))
     expected = _to_number(result)
     value = output.get("result")
-    # GSM8K 的表达式偶尔带千分位逗号或笔误，算出来和标注不一致时用标注值，保证和后文一致
+    # GSM8K expressions sometimes have thousands separators or typos; when the result disagrees with the label, the label is used so the rest of the answer stays consistent
     if expected is not None and (not isinstance(value, (int, float)) or abs(value - expected) > 1e-6 * max(1, abs(expected))):
         output = {"expression": expression, "result": expected}
     return json.dumps(output, ensure_ascii=False)
 
 
 class GSM8K(ParquetTask):
-    """openai/gsm8k main：train 7.5K / test 1.3K，答案里的 <<expr=result>> 转成计算器调用。"""
+    """openai/gsm8k main: train 7.5K / test 1.3K, the <<expr=result>> in the answers become calculator calls"""
     name = "gsm8k"
 
     def __init__(self, split, **kwargs):
@@ -162,8 +162,8 @@ HERMES_TOOL_RESPONSE = re.compile(r"<tool_response>\s*(.*?)\s*</tool_response>",
 
 
 def convert_hermes(row):
-    """hermes 的 system/human/gpt/tool 对话 -> 和推理时一致的 tools / tool_calls 格式；格式不对返回 None。"""
-    # 推理时 system 里是 "[" + fn.schema + "]"，schema 只有 {"function": {...}}，没有 "type"
+    """a hermes system/human/gpt/tool conversation -> the tools / tool_calls format used at inference; None when malformed"""
+    # at inference the system turn holds "[" + fn.schema + "]", and the schema is only {"function": {...}}, without "type"
     tools = json.loads(row["tools"]) if row.get("tools") else None
     messages = []
     if tools:
@@ -185,7 +185,7 @@ def convert_hermes(row):
         elif speaker == "tool":
             if not messages or not messages[-1].get("tool_calls"):
                 return None
-            # engine 把每个函数的 json 输出用换行拼成一个 tool output
+            # the engine joins the json output of each function with newlines into one tool output
             responses = [json.loads(r)["content"] for r in HERMES_TOOL_RESPONSE.findall(value)]
             messages.append({"role": "tool", "content": "\n".join(
                 r if isinstance(r, str) else json.dumps(r, ensure_ascii=False) for r in responses)})
@@ -197,7 +197,7 @@ def convert_hermes(row):
 
 
 class HermesFunctionCalling(Task):
-    """NousResearch/hermes-function-calling-v1：func-calling 1.9K + glaive 5.2K 条多轮函数调用对话。"""
+    """NousResearch/hermes-function-calling-v1: func-calling 1.9K + glaive 5.2K multi-turn function calling conversations"""
     name = "toolcall"
     files = ("func-calling.json", "glaive-function-calling-5k.json")
 
@@ -225,7 +225,7 @@ class HermesFunctionCalling(Task):
 
 
 class CustomJSON(Task):
-    """每行一个 {"messages": [...]} 的 jsonl，比如自己合成的身份认知对话。"""
+    """a jsonl with one {"messages": [...]} per line, e.g. our synthesized identity conversations"""
     name = "custom"
 
     def __init__(self, path, **kwargs):
@@ -241,7 +241,7 @@ class CustomJSON(Task):
 
 
 class TaskMixture:
-    """确定性地打乱所有 Task 的样本，让各个任务均匀分布在整个训练过程里。"""
+    """shuffles the examples of all Tasks deterministically, so every task is spread evenly over training"""
 
     def __init__(self, tasks, seed=42):
         if not tasks:
@@ -278,7 +278,7 @@ BANNED_PATTERN = re.compile(
 
 
 def _text_of(value):
-    """把 content / reasoning_content / tool_calls 统一摊平成字符串列表。"""
+    """flattens content / reasoning_content / tool_calls into a list of strings"""
     if isinstance(value, str):
         return [value]
     if isinstance(value, list):
@@ -302,9 +302,9 @@ def contains_banned_words(conversation):
 
 
 class SFTDataset(BaseDataset):
-    """和 PretrainDataset 一样配合 DataLoader 多 worker 使用：shard_id = rank*num_workers + worker_id，
-    每个 shard 依次取 mixture 的第 shard_id, shard_id+num_shards, ... 条对话，打包成 CPU 上的 (x, y, segment_ids)。
-    resume_state_dict 以 worker id 为 key。"""
+    """used with several DataLoader workers like PretrainDataset: shard_id = rank*num_workers + worker_id, each shard takes
+    conversations shard_id, shard_id+num_shards, ... of the mixture and packs them into CPU (x, y, segment_ids).
+    resume_state_dict is keyed by worker id."""
 
     def __init__(self, mixture: TaskMixture, tokeniz: tokenizer.Tokenizer,
                  batch_size, seq_len, rank=0, world_size=1,
@@ -322,7 +322,7 @@ class SFTDataset(BaseDataset):
         return len(self.mixture)
 
     def _tokenize(self, example):
-        """返回 (token, mask)；被过滤或超长的对话返回 None。"""
+        """(token, mask), or None for a filtered or too long conversation"""
         conversation = preprocess_conversation(example)
         if not conversation["messages"] or contains_banned_words(conversation):
             return None
@@ -404,7 +404,7 @@ class SFTDataset(BaseDataset):
             token_batch = torch.tensor(token_batch)
             mask_batch = torch.tensor(mask_batch)
             segment_batch = torch.tensor(segment_batch)
-            x = token_batch[:, :-1].clone()  # 只有一行时 contiguous() 不复制，x 和 y 会共用内存
+            x = token_batch[:, :-1].clone()  # a one row batch: contiguous() would share memory with y
             y = token_batch[:, 1:].clone()
             y[mask_batch[:, :-1] == tokenizer.Ignored.YES] = -1
             segment_batch = segment_batch[:, :-1].contiguous()
@@ -412,7 +412,7 @@ class SFTDataset(BaseDataset):
             yield x, y, segment_batch, state_dict
 
     def estimate_total_token(self, sample_num=2000):
-        # mixture 已经打乱，取前 sample_num 条估平均长度，再乘总条数（所有 rank 合计）
+        # the mixture is shuffled: the mean length of the first sample_num conversations times the total (all ranks)
         total_row = len(self.mixture)
         sample_num = min(sample_num, total_row)
         token_sum = 0

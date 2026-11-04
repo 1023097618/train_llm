@@ -1,4 +1,4 @@
-"""项目数据目录的统一约定；训练参数仍可覆盖这些默认路径。"""
+"""Where the project keeps its data; command line arguments can still override these defaults."""
 
 from pathlib import Path
 
@@ -8,13 +8,13 @@ PROCESSED_ROOT = DATA_ROOT / "processed"
 
 RAW_CUSTOM = RAW_ROOT / "custom"
 PRETRAIN_T2T = PROCESSED_ROOT / "pretrain" / "t2t"
-# nanochat 的 SFT 数据，由 script/download_sft.py 下载，目录结构与 HF 仓库一致
+# nanochat's SFT data, downloaded by script/download_sft.py, laid out like the Hugging Face repositories
 RAW_SFT = RAW_ROOT / "sft"
 SFT_SMOLTALK = RAW_SFT / "smol-smoltalk" / "data"
 SFT_MMLU = RAW_SFT / "mmlu" / "all"
 SFT_GSM8K = RAW_SFT / "gsm8k" / "main"
 SFT_TOOLCALL = RAW_SFT / "hermes-function-calling-v1"
-# 评测数据，由 script/download_eval.py 下载
+# evaluation data, downloaded by script/download_eval.py
 # RL questions beyond GSM8K train (script/prepare_rl_data.py)
 RAW_RL = RAW_ROOT / "rl"
 
@@ -41,7 +41,7 @@ EVAL_BUNDLE = RAW_EVAL / "eval_bundle"  # CORE (DCLM)
 EVAL_ARC = RAW_EVAL / "ai2_arc"
 EVAL_HUMANEVAL = RAW_EVAL / "openai_humaneval"
 SFT_IDENTITY = RAW_CUSTOM / "identity_conversations_en_d20.jsonl"
-# 用 DeepSeek 合成的数据，发布在 Hugging Face（script/download_release.py）
-SFT_IDENTITY_QA = RAW_CUSTOM / "identity_qa_d20.jsonl"  # 短的身份问答（你是谁 / 你是 ChatGPT 吗）
-SFT_TOOLCALL_SYNTH = RAW_CUSTOM / "toolcall_synth.jsonl"  # 参数纠错重试 / 缺参数先追问 / 连续调用 / 不该调用
-SFT_T2I_CHAT = RAW_CUSTOM / "t2i_chat.jsonl"  # 对话式生图：什么时候画、怎么写描述、连续改图、不该画
+# data synthesized with DeepSeek, published on Hugging Face (script/download_release.py)
+SFT_IDENTITY_QA = RAW_CUSTOM / "identity_qa_d20.jsonl"  # short identity questions (who are you / are you ChatGPT)
+SFT_TOOLCALL_SYNTH = RAW_CUSTOM / "toolcall_synth.jsonl"  # retry after an argument error / ask for a missing argument / chained calls / no call needed
+SFT_T2I_CHAT = RAW_CUSTOM / "t2i_chat.jsonl"  # conversational drawing: when to draw, writing the description, successive edits, when not to draw

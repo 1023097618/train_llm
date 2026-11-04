@@ -47,7 +47,7 @@ parser.add_argument("--final_eval", default=1, type=int, help="evaluate before t
 parser.add_argument("--init_lr_frac", default=0.8, type=float, help="initial lr fraction relative to pretrain lr")
 parser.add_argument("--warm_down_ratio", default=0.5, type=float, help="lr warmdown ratio")
 parser.add_argument("--final_lr_frac", default=0., type=float, help="min lr fraction")
-# lr 默认继承预训练（和 nanochat 一样）；显式指定时按 pretrain 的规则乘 sqrt(batch_token/B_REF)
+# learning rates are inherited from pretraining by default (like nanochat); given explicitly, they are scaled by sqrt(batch_token/B_REF) like in pretrain
 parser.add_argument("--lmhead_lr",default=None,type=float,help="lmhead learning rate (default: inherit from pretrain)")
 parser.add_argument("--embedding_lr",default=None,type=float,help="learning rate for embedding (default: inherit from pretrain)")
 parser.add_argument("--matrix_lr",default=None,type=float,help="matrix learning rate (default: inherit from pretrain)")
@@ -127,7 +127,7 @@ train_resume_state=None
 if args.resume!=-1:
     with open(args.save_ckpt_path,"rb") as f:
         resume_ckpt=torch.load(f,map_location="cpu",weights_only=False)
-    assert resume_ckpt.get("num_workers") == args.num_workers, "resume 时 num_workers 必须与保存时一致"
+    assert resume_ckpt.get("num_workers") == args.num_workers, "num_workers must match the saved run when resuming"
     train_resume_state=resume_ckpt['train_loader_state_dict']
     if ddp:
         train_resume_state=train_resume_state[rank]
@@ -161,7 +161,7 @@ if args.num_workers > 0:
 train_data_loader=iter(DataLoader(train_data_set,**loader_kwargs))
 loader_state=dict(train_resume_state or {})
 SCALE_RATIO=1 #to make the progress more quick
-B_REF=2**19 # 与 pretrain.py 的 B_REF 保持一致
+B_REF=2**19 # same as B_REF in pretrain.py
 if device.startswith("cuda"):
     device_name=torch.cuda.get_device_name(local_rank)
     OPTIMAL_FLOPS=common.get_peak_flops(device_name)*world_size
@@ -185,7 +185,7 @@ if args.use_wandb and is_main:
         run=wandb.init(entity="enyuwang1023097618-123",project="mygpt",config=config_all)
 
 
-# resume 时从 SFT checkpoint 恢复模型和优化器，否则从预训练 checkpoint 开始
+# resuming restores model and optimizer from the SFT checkpoint, otherwise start from the pretrained checkpoint
 if resume_ckpt is not None:
     resume_dict=resume_ckpt
 else:
@@ -197,7 +197,7 @@ config.seq_len=args.seq_len
 orig_gpt=gpt.GPT(config,device,tokeniz)
 orig_gpt.init_weight()
 orig_gpt.load_state_dict(new_dict)
-# lr/wd 等超参数随后由 checkpoint 里的 param_groups 覆盖
+# lr / wd and the other hyperparameters are then overwritten by the param_groups in the checkpoint
 param_groups=orig_gpt.get_param_groups()
 optimiz=optimizer.MuonOptimizer(param_groups)
 optimizer_state=resume_dict['optimizer_state_dict']
@@ -235,11 +235,11 @@ if ddp and not isinstance(resume_dict['optimizer_state_dict'], list):
                     if key in state:
                         state[key]=state[key][start:stop].clone()
 if resume_ckpt is None:
-    # 预训练保存的 init_lr = 配置 lr * sqrt(pretrain_batch_token/B_REF)，SFT batch 不同时再按 sqrt(B) 换算
+    # pretraining saved init_lr = configured lr * sqrt(pretrain_batch_token/B_REF); a different SFT batch is converted with sqrt(B)
     pretrain_batch_token=resume_dict.get("batch_token", args.batch_token)
     batch_scale=(args.batch_token/pretrain_batch_token)**0.5
     override_scale=(args.batch_token/B_REF)**0.5
-    # 显式指定的 lr 也要乘 get_param_groups 里的 1/sqrt(d_model) 缩放
+    # an explicit lr also gets the 1/sqrt(d_model) scaling of get_param_groups
     dmodel_lr_scale=(config.model_dim/768)**-0.5
     value_embed_params={id(p) for p in orig_gpt.value_embeds.parameters()}
     for group in optimiz.param_groups:
@@ -257,13 +257,13 @@ if resume_ckpt is None:
         base_lr=override*override_scale if override is not None else group['init_lr']*batch_scale
         group['init_lr']=base_lr*args.init_lr_frac
         group['lr']=group['init_lr']
-        # 预训练末尾 wd 已经衰减，SFT 不再使用 weight decay（和 nanochat 一致）
+        # weight decay has decayed by the end of pretraining, SFT uses none (like nanochat)
         group['wd']=0.
         group['init_wd']=0.
     if is_main:
         print("SFT init lr:", [f"{g['kind']}:{g['init_lr']:.5f}" for g in optimiz.param_groups])
 else:
-    # 保存的 param_groups 里 init_lr 已经乘过 init_lr_frac，不能再缩放一次
+    # init_lr in the saved param_groups already includes init_lr_frac, do not scale it twice
     start_iter=resume_ckpt['step']+1
     best_bpb=resume_ckpt['best_bpb']
     if is_main:
@@ -301,7 +301,7 @@ def get_momentum(step):
         return 0.95
 
 def save_model(step,train_loader_state_dict,bpb=None):
-    """step 是已经完成的最后一个 optimizer step，resume 时从 step+1 继续（和 pretrain 一致）。"""
+    """step is the last finished optimizer step, a resume continues at step+1 (like pretrain)"""
     global best_bpb
     optimizer_state=common.to_cpu(optimiz.state_dict())
     if ddp:
@@ -352,7 +352,7 @@ for now_step in range(start_iter,total_steps):
         if ddp:
             dist.barrier()
     if args.save_every > 0 and now_step%args.save_every==0 and now_step!=start_iter:
-        # 在本 step 训练之前保存，所以已完成的是 now_step-1
+        # saved before this step trains, so the finished one is now_step-1
         save_model(now_step-1,loader_state,bpb)
     t1=time.perf_counter()
     progress = now_step/total_steps

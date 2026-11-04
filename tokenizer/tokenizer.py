@@ -128,8 +128,8 @@ class Tokenizer:
                 if isinstance(content, str) and content:
                     add_token(self.encode_ordinary(content), Ignored.NO)
                 elif isinstance(content, list):
-                    # assistant 生成的图片也是后续轮次的视觉上下文；
-                    # 图像 token 只做 embedding 占位，不参与文本 CE loss。
+                    # pictures the assistant drew are visual context for later turns;
+                    # image tokens only hold embeddings and are not part of the text loss
                     for part in content:
                         if part['type'] == 'text':
                             add_token(self.encode_ordinary(part['content']), Ignored.NO)
@@ -138,9 +138,8 @@ class Tokenizer:
                             add_token(self.encode_ordinary(part['content']), Ignored.NO)
                             add_token(visual_prompt_end, Ignored.NO)
                         elif part['type'] == 'i2i_prompt':
-                            # 推理时一旦生成 edit_prompt_start，由运行时
-                            # 直接补 image_ref_start，因此不训练这一步转移。
-                            # image_N 仍需要模型根据多图上下文自行推断。
+                            # at inference the runtime adds image_ref_start right after edit_prompt_start, so that
+                            # transition is not trained; which image N to edit the model still decides from the context
                             add_token(edit_prompt_start, Ignored.YES)
                             add_token(image_ref_start, Ignored.NO)
                             add_token(self.encode_ordinary(part['image_ref']), Ignored.NO)
@@ -153,7 +152,7 @@ class Tokenizer:
                             add_token([audio_pad] * audio_len, Ignored.YES)
                             add_token(end_of_audio, Ignored.YES)
                         elif part['type'] == 'image':
-                            # 程序把画好的图放回对话：<image><image ref>N</image ref><image pad>*n</image>，后面的 <edit prompt> 靠编号引用
+                            # the program puts the drawn picture back: <image><image ref>N</image ref><image pad>*n</image>, later <edit prompt>s refer to the number
                             image_len = part.get('length', 196)
                             add_token(start_of_image, Ignored.YES)
                             if 'image_ref' in part:

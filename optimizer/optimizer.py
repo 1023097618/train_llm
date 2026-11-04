@@ -185,7 +185,7 @@ class MuonOptimizer(torch.optim.Optimizer):
         params=group['params']
         reduce_info={}
         for p in params:
-            #TODO 这边需要进一步考虑在一些冻结层数训练场景下，梯度会为空的场景
+            #TODO with frozen layers some gradients are None, which needs more thought here
             grad=p.grad
             if not self.is_dist:
                 reduce_info[p]=dict(future=None,grad=grad,is_sharded=False)

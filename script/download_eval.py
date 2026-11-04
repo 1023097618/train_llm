@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import urllib.request
 import zipfile
-# 默认走国内镜像；已经设置了 HF_ENDPOINT 时以环境变量为准
+# the hf-mirror.com mirror by default; an HF_ENDPOINT that is already set wins
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 import huggingface_hub
 from common.data_paths import EVAL_BUNDLE, EVAL_ARC, EVAL_HUMANEVAL
@@ -44,7 +44,7 @@ for repo_id, local_dir, patterns in DATASETS:
                                               allow_patterns=patterns, max_workers=4)
             break
         except Exception as e:
-            print(f"重试 {repo_id} ({attempt + 1}/10):", e)
+            print(f"retry {repo_id} ({attempt + 1}/10):", e)
     else:
         raise RuntimeError(f"failed to download {repo_id}")
     print(f"{repo_id} -> {local_dir}")

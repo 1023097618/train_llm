@@ -5,7 +5,8 @@ wandb/*
 weight/*
 weight_vllm/*
 log/*
-test.ipynb# tools for making the published data and the README picture, kept locally: the data itself is on Hugging Face
+test.ipynb
+# tools for making the published data and the README picture, kept locally: the data itself is on Hugging Face
 datagen/
 script/render_chat_images.py
 script/prepare_t2i_data.py
